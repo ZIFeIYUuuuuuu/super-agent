@@ -1,0 +1,22 @@
+# Local secrets and virtual environments
+.env
+.venv/
+
+# Python caches
+__pycache__/
+app/__pycache__/
+*.py[cod]
+
+# IDE files
+.idea/
+.vscode/
+
+# Local databases, logs, and runtime artifacts
+.pgdata-*/
+.pgdata-*.log
+generated-pdfs/
+.tool-test-artifacts/
+.rag-test-artifacts/
+.approval-test-artifacts/
+service.stdout.log
+service.stderr.log
