@@ -1,11 +1,11 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   --page-background:
-    radial-gradient(circle at top left, rgba(123, 193, 255, 0.16), transparent 24%),
-    radial-gradient(circle at 78% 18%, rgba(177, 231, 255, 0.12), transparent 24%),
-    linear-gradient(180deg, #07111d 0%, #0a1220 48%, #08101a 100%);
-  --page-foreground: #f5f8ff;
-  --page-muted: rgba(215, 226, 241, 0.72);
+    radial-gradient(circle at top left, rgba(225, 230, 236, 0.72), transparent 24%),
+    radial-gradient(circle at 84% 10%, rgba(236, 239, 243, 0.88), transparent 22%),
+    linear-gradient(180deg, #f7f7f5 0%, #f2f2ef 48%, #ededea 100%);
+  --page-foreground: #111111;
+  --page-muted: rgba(77, 77, 77, 0.72);
 }
 
 *,
@@ -15,11 +15,14 @@
 }
 
 html {
+  height: 100%;
   scroll-behavior: auto;
 }
 
 body {
   margin: 0;
+  height: 100%;
+  overflow: hidden;
   background: var(--page-background);
   color: var(--page-foreground);
   font-family:
@@ -29,18 +32,21 @@ body {
     BlinkMacSystemFont,
     sans-serif;
   text-rendering: optimizeLegibility;
+  min-height: 100vh;
 }
 
 a {
   color: inherit;
+  text-decoration: none;
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
 ::selection {
-  background: rgba(135, 198, 255, 0.24);
-  color: #ffffff;
+  background: rgba(217, 72, 72, 0.16);
+  color: #111111;
 }

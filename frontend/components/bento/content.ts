@@ -16,6 +16,18 @@ export type TranslationShape = {
   clearChat: string;
   send: string;
   showThoughts: string;
+  workspaceLabel: string;
+  workspaceDescription: string;
+  contextTitle: string;
+  recentThreadsTitle: string;
+  recentThreadsHint: string;
+  recentThreadsEmpty: string;
+  recentThreadsOpen: string;
+  emptyStateTitle: string;
+  emptyStateDescription: string;
+  knowledgeHint: string;
+  approvalHint: string;
+  activityHint: string;
   uploadTitle: string;
   chooseFile: string;
   upload: string;
@@ -31,6 +43,9 @@ export type TranslationShape = {
   historyCacheLabel: string;
   historyCacheOn: string;
   historyCacheOff: string;
+  approvalModalTitle: string;
+  approvalModalDescription: string;
+  close: string;
   knowledgeTitle: string;
   refresh: string;
   approvalTitle: string;
@@ -101,6 +116,18 @@ export const translations: Record<Locale, TranslationShape> = {
     clearChat: "清空对话",
     send: "发送",
     showThoughts: "显示思考过程",
+    workspaceLabel: "对话工作台",
+    workspaceDescription: "主对话区会保留流式输出，右侧工具栏负责知识、审批、历史和结果查看。",
+    contextTitle: "上下文工具栏",
+    recentThreadsTitle: "最近线程",
+    recentThreadsHint: "这里保存最近 10 条线程记录，刷新页面后仍可继续回到当时的历史对话。",
+    recentThreadsEmpty: "还没有可回看的线程记录。",
+    recentThreadsOpen: "打开线程",
+    emptyStateTitle: "从一个问题开始",
+    emptyStateDescription: "你可以直接聊天，也可以上传私有文档、查看缓存历史、刷新审批状态，再围绕同一个线程持续推进。",
+    knowledgeHint: "上传 PDF 或 Markdown 后，系统会把内容切分进当前知识命名空间。",
+    approvalHint: "需要人工决策的高风险动作会先在这里等待审批，再恢复执行。",
+    activityHint: "这里记录最近的刷新、上传、审批和历史加载动作。",
     uploadTitle: "上传私有文档",
     chooseFile: "选择 PDF / Markdown 文件",
     upload: "上传",
@@ -116,6 +143,9 @@ export const translations: Record<Locale, TranslationShape> = {
     historyCacheLabel: "缓存状态",
     historyCacheOn: "Redis 热缓存已启用",
     historyCacheOff: "Redis 热缓存未启用",
+    approvalModalTitle: "人工介入",
+    approvalModalDescription: "当前线程命中了需要人工确认的高风险动作，请在弹窗内批准、拒绝，或在批准后恢复执行。",
+    close: "关闭",
     knowledgeTitle: "知识后端",
     refresh: "刷新",
     approvalTitle: "人工介入",
@@ -184,6 +214,18 @@ export const translations: Record<Locale, TranslationShape> = {
     clearChat: "Clear Chat",
     send: "Send",
     showThoughts: "Show thought process",
+    workspaceLabel: "Conversation workspace",
+    workspaceDescription: "The main column stays focused on streaming chat while the right rail keeps knowledge, approval, history, and result controls close by.",
+    contextTitle: "Context rail",
+    recentThreadsTitle: "Recent threads",
+    recentThreadsHint: "Keep the latest 10 threads on the left so you can reopen prior conversations after a refresh.",
+    recentThreadsEmpty: "No recent thread history yet.",
+    recentThreadsOpen: "Open thread",
+    emptyStateTitle: "Start with one question",
+    emptyStateDescription: "Chat directly, upload private documents, inspect cached history, and resume guarded runs from the same thread.",
+    knowledgeHint: "Upload PDF or Markdown files to index them into the current knowledge namespace.",
+    approvalHint: "High-risk actions pause here for review before the workflow resumes.",
+    activityHint: "Recent refreshes, uploads, approval actions, and history loads appear here.",
     uploadTitle: "Upload private documents",
     chooseFile: "Choose a PDF / Markdown file",
     upload: "Upload",
@@ -199,6 +241,9 @@ export const translations: Record<Locale, TranslationShape> = {
     historyCacheLabel: "Cache status",
     historyCacheOn: "Redis hot cache enabled",
     historyCacheOff: "Redis hot cache disabled",
+    approvalModalTitle: "Human in the loop",
+    approvalModalDescription: "This thread hit a high-risk action. Review it in the modal, then approve, reject, or resume after approval.",
+    close: "Close",
     knowledgeTitle: "Knowledge backend",
     refresh: "Refresh",
     approvalTitle: "Human in the loop",

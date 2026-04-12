@@ -1,25 +1,34 @@
-# Super Agent
+﻿# Super Agent
 
-一个基于 `FastAPI + LangGraph + PostgreSQL/PGVector + Next.js 15` 的智能体工作台项目。
+一个基于 `FastAPI + LangGraph + PostgreSQL/PGVector + Redis + Next.js 15` 的智能体工作台项目。
 
-当前仓库已经完成两层前端迁移：
-- 后端：Python / FastAPI / LangGraph / MCP / RAG / PGVector
-- 前端：React 19 / Next.js 15 / TypeScript / CSS Modules
+它把几个核心能力放在了一套前后端应用里：
 
-浏览器主入口现在由新的 `frontend/` 应用承载，旧的静态 `web/` 前端已经移除。
+- 流式聊天（SSE）
+- 工具调用与 MCP 接入
+- RAG 文档上传与检索
+- 人工审批 / 恢复执行
+- Redis 会话历史缓存
+- Next.js 前端工作台界面
+
+当前浏览器主入口由 `frontend/` 提供，后端根路径会重定向到前端页面。
 
 ## 技术栈
 
-### 后端
+后端：
+
+- Python 3.12
 - FastAPI
 - LangGraph
 - PostgreSQL
 - PGVector
+- Redis
 - Psycopg 3
 - MCP
 - Tavily / Playwright / BeautifulSoup / PDF 生成
 
-### 前端
+前端：
+
 - Next.js 15.3.1
 - React 19
 - TypeScript
@@ -31,73 +40,75 @@
 ## 目录结构
 
 ```text
-app/                  后端核心代码
-frontend/             新的 Next.js 前端应用
-main.py               FastAPI 入口
-docker-compose.yml    标准容器编排
-docker-compose.dev.yml 开发态容器覆盖
-Dockerfile.backend    后端镜像
-frontend/Dockerfile   前端镜像
+app/                    后端核心代码
+frontend/               Next.js 前端应用
+main.py                 FastAPI 启动入口
+docker-compose.yml      标准容器编排
+docker-compose.dev.yml  开发态覆盖配置
+Dockerfile.backend      后端镜像
+frontend/Dockerfile     前端镜像
+test_sse.py             SSE / 工具链验证脚本
 ```
 
-## 环境变量
+## 默认端口
 
-### 后端
+| 服务 | 地址 |
+| --- | --- |
+| 前端 | `http://127.0.0.1:3100` |
+| 后端 | `http://127.0.0.1:8010` |
+| PostgreSQL | `127.0.0.1:55432` |
+| Redis | `127.0.0.1:63790` |
 
-复制根目录环境模板：
+## 快速开始
+
+### 1. 准备环境变量
+
+复制根目录环境变量模板：
 
 ```powershell
 copy .env.example .env
 ```
 
-至少建议检查这些变量：
-
-```env
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/super_agent
-FRONTEND_URL=http://127.0.0.1:3100
-OPENAI_API_KEY=
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_MODEL=qwen-plus
-TAVILY_API_KEY=
-```
-
-### 前端
-
-复制前端模板：
+复制前端环境变量模板：
 
 ```powershell
 cd frontend
 copy .env.example .env.local
 ```
 
-默认配置：
+至少确认这些变量是正确的：
 
 ```env
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/super_agent
+REDIS_URL=redis://127.0.0.1:63790/0
+FRONTEND_URL=http://127.0.0.1:3100
 BACKEND_URL=http://127.0.0.1:8010
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_MODEL=qwen-plus
+TAVILY_API_KEY=
 ```
 
-## 本地开发运行
+### 2. 启动基础依赖
 
-### 1. 启动数据库
-
-如果你只想起数据库：
+如果你只想先启动数据库和 Redis：
 
 ```powershell
-docker compose up -d db
+docker compose up -d db redis
 ```
 
-### 2. 启动后端
+### 3. 启动后端
 
 ```powershell
 cd C:\Users\Administrator\Desktop\super-agnet
 .\.venv\Scripts\python.exe main.py
 ```
 
-后端地址：
+启动后访问：
 
 - [http://127.0.0.1:8010](http://127.0.0.1:8010)
 
-### 3. 启动前端
+### 4. 启动前端
 
 ```powershell
 cd C:\Users\Administrator\Desktop\super-agnet\frontend
@@ -105,7 +116,7 @@ npm install
 npm run dev
 ```
 
-前端地址：
+启动后访问：
 
 - [http://127.0.0.1:3100](http://127.0.0.1:3100)
 
@@ -113,17 +124,16 @@ npm run dev
 
 ### 标准模式
 
-适合接近生产的本地联调：
+适合本地联调或接近生产的运行方式：
 
 ```powershell
 docker compose up -d --build
 ```
 
-服务地址：
+启动后可访问：
 
 - 前端：[http://127.0.0.1:3100](http://127.0.0.1:3100)
 - 后端：[http://127.0.0.1:8010](http://127.0.0.1:8010)
-- 数据库宿主机端口：`55432`
 
 ### 开发模式
 
@@ -134,53 +144,95 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 这个模式会：
+
 - 挂载本地代码目录
 - 后端使用 `uvicorn --reload`
 - 前端使用 `next dev`
 
-## 常用验证命令
+## 常用命令
 
-### 后端
+后端语法检查：
 
 ```powershell
 python -m py_compile main.py
 ```
 
-### 前端
+前端类型检查：
 
 ```powershell
 cd frontend
 npm run typecheck
+```
+
+前端生产构建：
+
+```powershell
+cd frontend
 npm run build
 ```
 
-### Compose 配置检查
+Compose 配置检查：
 
 ```powershell
 docker compose config
 docker compose -f docker-compose.yml -f docker-compose.dev.yml config
 ```
 
-## 功能验收建议
+SSE / 工具链验证：
 
-启动前后端后，按这个顺序验收：
+```powershell
+python test_sse.py --base-url http://127.0.0.1:8010
+```
+
+## 核心接口
+
+常用后端接口包括：
+
+- `POST /v1/chat/completions`
+- `POST /v1/knowledge/documents`
+- `GET /v1/knowledge/status`
+- `GET /v1/approvals/pending/{thread_id}`
+- `POST /v1/approvals/decision`
+- `POST /v1/approvals/resume`
+
+前端在 `frontend/app/api/*` 下提供了一层代理，浏览器侧通常不需要直接写死后端地址。
+
+## 验收建议
+
+启动前后端后，建议按这个顺序检查：
 
 1. 打开 [http://127.0.0.1:3100](http://127.0.0.1:3100)
-2. 发送一条聊天消息，确认 SSE 流式输出正常
-3. 勾选/取消“显示思考过程”，确认 thought 显示逻辑正常
-4. 上传一个 `.md` 或 `.pdf`
-5. 刷新知识状态，确认能看到 `pgvector`
-6. 测试审批刷新、批准、拒绝、恢复
-7. 访问 [http://127.0.0.1:8010](http://127.0.0.1:8010)，确认后端根入口会跳到前端
+2. 发送一条消息，确认 SSE 流式输出正常
+3. 切换“是否显示 thought / 思考过程”，确认界面行为正常
+4. 上传一个 `.md` 或 `.pdf` 文件
+5. 刷新知识库状态，确认能够看到检索后端状态
+6. 测试审批、批准、拒绝、恢复执行链路
+7. 访问 [http://127.0.0.1:8010](http://127.0.0.1:8010)，确认后端根入口会跳转到前端
+
+## 部署说明
+
+这个项目更适合以“独立应用”的形式部署，再通过博客导航或 `iframe` 接入，而不是直接塞进博客主题源码里。
+
+推荐方式：
+
+- 博客：`https://yourblog.com`
+- Agent 应用：`https://agent.yourblog.com`
+- 反向代理到前端 `3100`
+- 前端再通过 `BACKEND_URL` 访问后端 `8010`
+
+如果你一定要挂在子路径，比如 `https://yourblog.com/agent`，通常还需要额外处理 Next.js 的 `basePath`、反向代理规则和静态资源路径。
 
 ## 当前状态
 
 已完成：
-- 旧静态前端移除
-- 新 Next.js 前端接入真实后端接口
-- 前后端统一 Docker 化
 
-仍可继续优化：
-- 统一生产部署策略
-- 反向代理整合
-- 更完整的前端组件拆分与状态管理抽象
+- Next.js 前端接管浏览器入口
+- FastAPI 后端提供聊天、知识库、审批和流式接口
+- PostgreSQL / PGVector / Redis 接入
+- Docker 方式运行前后端和基础依赖
+
+后续可以继续优化：
+
+- 生产环境反向代理与域名方案
+- 前端组件拆分与状态管理收敛
+- 更完整的自动化测试和部署流程

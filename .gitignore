@@ -1,9 +1,10 @@
-# Environment and secrets
+# Secrets and local env files
 .env
 .env.*
 !.env.example
-frontend/.env.local
-frontend/.env.*.local
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
 # Python
 .venv/
@@ -32,7 +33,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# IDE and editor files
+# IDE / editor
 .idea/
 .vscode/
 *.swp
@@ -44,7 +45,7 @@ pnpm-debug.log*
 Thumbs.db
 Desktop.ini
 
-# Local databases, containers, and runtime artifacts
+# Local service data and generated artifacts
 .pgdata-*/
 .pgdata-*.log
 generated-pdfs/
@@ -53,9 +54,10 @@ generated-pdfs/
 .approval-test-artifacts/
 service.stdout.log
 service.stderr.log
+*.log
 *.pid
 
-# Build and temporary outputs
+# Build and temp output
 dist/
 build/
 tmp/
