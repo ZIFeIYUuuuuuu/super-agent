@@ -6,6 +6,7 @@ from pydantic import AliasChoices, BaseModel, Field
 
 StreamEventType = Literal["thought", "answer", "error"]
 MessageRole = Literal["system", "user", "assistant"]
+HistoryMessageKind = Literal["user", "thought", "answer", "error"]
 ApprovalStatus = Literal["pending", "approved", "rejected"]
 ApprovalDecision = Literal["approve", "reject"]
 
@@ -73,6 +74,28 @@ class ChatStreamEvent(BaseModel):
     content: str = Field(
         ...,
         description="Event body text.",
+    )
+
+
+class CachedHistoryMessage(BaseModel):
+    """One cached chat-history message suitable for Redis hot storage."""
+
+    kind: HistoryMessageKind = Field(..., description="Normalized chat item kind.")
+    content: str = Field(..., description="Rendered content text.")
+    created_at: str = Field(..., description="ISO timestamp when the item was cached.")
+
+
+class ThreadHistoryResponse(BaseModel):
+    """Recent cached history for one thread."""
+
+    thread_id: str = Field(..., description="Conversation thread identifier.")
+    messages: list[CachedHistoryMessage] = Field(
+        default_factory=list,
+        description="Recent cached chat items in chronological order.",
+    )
+    cached: bool = Field(
+        ...,
+        description="Whether the result came from the Redis hot cache.",
     )
 
 

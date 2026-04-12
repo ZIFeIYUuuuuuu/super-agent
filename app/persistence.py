@@ -18,6 +18,7 @@ class PersistenceSettings:
 
     database_url: str
     setup_on_startup: bool = True
+    connect_timeout_seconds: int = 5
 
     @classmethod
     def from_env(cls) -> PersistenceSettings:
@@ -29,9 +30,11 @@ class PersistenceSettings:
             )
 
         setup_flag: str = os.getenv("LANGGRAPH_SETUP_CHECKPOINTER", "true").lower()
+        timeout_raw = os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5").strip()
         return cls(
             database_url=database_url,
             setup_on_startup=setup_flag not in {"0", "false", "no"},
+            connect_timeout_seconds=max(1, int(timeout_raw or "5")),
         )
 
 
@@ -50,6 +53,7 @@ class PostgresCheckpointStore:
             autocommit=True,
             prepare_threshold=0,
             row_factory=dict_row,
+            connect_timeout=self._settings.connect_timeout_seconds,
         )
         try:
             checkpointer = PostgresSaver(

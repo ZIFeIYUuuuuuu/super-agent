@@ -27,7 +27,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 ROOT = Path(__file__).resolve().parent
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://127.0.0.1:8010"
 CHAT_PATH = "/v1/chat/completions"
 PG_PORT = 55433
 PG_DB = "agent_memory_test"
@@ -1044,7 +1044,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database-url", type=str, default=None)
     parser.add_argument("--app-module", type=str, default="main:app")
     parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--pg-bin-dir", type=str, default=None)
     parser.add_argument("--pg-data-dir", type=str, default=str(PG_DATA))
     parser.add_argument("--pg-port", type=int, default=PG_PORT)

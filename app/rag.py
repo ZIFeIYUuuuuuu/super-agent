@@ -82,6 +82,7 @@ class KnowledgeBaseSettings:
     max_queries: int = 3
     max_context_chars: int = 2_400
     allow_compat_fallback: bool = True
+    connect_timeout_seconds: int = 5
 
     @classmethod
     def from_env(cls) -> KnowledgeBaseSettings:
@@ -90,9 +91,11 @@ class KnowledgeBaseSettings:
         if not database_url:
             raise RuntimeError("DATABASE_URL must be set to enable RAG knowledge storage")
         fallback_flag = os.getenv("RAG_ALLOW_COMPAT_FALLBACK", "true").lower()
+        timeout_raw = os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5").strip()
         return cls(
             database_url=database_url,
             allow_compat_fallback=fallback_flag not in {"0", "false", "no"},
+            connect_timeout_seconds=max(1, int(timeout_raw or "5")),
         )
 
 
@@ -690,6 +693,7 @@ class KnowledgeBase:
             autocommit=True,
             prepare_threshold=0,
             row_factory=dict_row,
+            connect_timeout=self._settings.connect_timeout_seconds,
         )
 
 

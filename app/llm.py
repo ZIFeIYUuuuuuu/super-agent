@@ -89,7 +89,7 @@ class DeterministicToolCallingLLM:
                 answer=answer,
             )
 
-        if birthday_memory and "璁颁綇" in latest_user_message:
+        if birthday_memory and "记住" in latest_user_message:
             answer = (
                 "\u6211\u8bb0\u4f4f\u4e86\uff0c\u4f60\u7684\u751f\u65e5\u662f "
                 f"{birthday_memory.birthday}\u3002"
@@ -155,7 +155,7 @@ class DeterministicToolCallingLLM:
             return None
 
         lowered = latest_user_message.lower()
-        if not any(token in lowered for token in ("delete", "remove", "鍒犻櫎", "鍒犳帀")):
+        if not any(token in lowered for token in ("delete", "remove", "删除", "删掉")):
             return None
 
         path = self._extract_file_path(latest_user_message)
@@ -307,11 +307,24 @@ class DeterministicToolCallingLLM:
         if structured_answer is not None:
             return structured_answer
 
+        source = (
+            f"{best_chunk.get('filename', 'document')}#chunk-"
+            f"{best_chunk.get('chunk_index', 0)}"
+        )
+        model_grounded_answer = self._answer_with_retrieval_model(
+            user_question=user_question,
+            combined_text=combined_text,
+            source=source,
+        )
+        if model_grounded_answer is not None:
+            return model_grounded_answer
+
         question_terms = self._keywords(user_question)
+        sentence_pattern = re.compile(r"[.!?。！？]\s*|\n+")
         sentences = [
-            sentence.strip()
-            for sentence in re.split(r"(?<=[.!?銆傦紒锛焆)\s+|\n+", chunk_text)
-            if sentence.strip()
+            self._normalize_candidate_sentence(sentence)
+            for sentence in sentence_pattern.split(chunk_text)
+            if self._normalize_candidate_sentence(sentence)
         ]
         if not sentences:
             sentences = [chunk_text]
@@ -323,19 +336,78 @@ class DeterministicToolCallingLLM:
             for token in re.findall(r"[A-Za-z0-9:-]+", user_question):
                 if token and token.lower() in lowered:
                     numeric_bonus += 0.2
-            return overlap + numeric_bonus
+            heading_penalty = 2.5 if sentence.lstrip().startswith("#") else 0.0
+            markdown_penalty = 0.8 if sentence.startswith(("-", "*", ">")) else 0.0
+            short_penalty = 0.6 if len(sentence.strip()) <= 12 else 0.0
+            answer_bonus = 0.0
+            if self._contains_cjk(user_question):
+                if "谁" in user_question and any(
+                    token in sentence for token in ("是", "名为", "叫做", "人物", "英雄")
+                ):
+                    answer_bonus += 1.2
+                if "什么" in user_question and any(
+                    token in sentence for token in ("是", "指", "由", "包括", "规定")
+                ):
+                    answer_bonus += 0.8
+            return overlap + numeric_bonus + answer_bonus - heading_penalty - markdown_penalty - short_penalty
 
         best_sentence = max(sentences, key=sentence_score)
-        source = (
-            f"{best_chunk.get('filename', 'document')}#chunk-"
-            f"{best_chunk.get('chunk_index', 0)}"
-        )
         if self._contains_cjk(user_question):
             return (
                 "\u6839\u636e\u5df2\u4e0a\u4f20\u6587\u6863"
                 f"[{source}]\uff0c{best_sentence}"
             )
         return f"According to the uploaded document [{source}], {best_sentence}"
+
+    def _answer_with_retrieval_model(
+        self,
+        *,
+        user_question: str,
+        combined_text: str,
+        source: str,
+    ) -> str | None:
+        """Use the configured remote chat model to synthesize an answer from retrieved snippets."""
+        if not self._remote_chat_available():
+            return None
+
+        retrieval_prompt = (
+            "You are answering a question strictly from uploaded private knowledge snippets.\n"
+            "Rules:\n"
+            "- Answer only from the provided snippet text.\n"
+            "- Prefer concise factual answers over generic summaries.\n"
+            "- Ignore Markdown headings unless they contain the actual answer.\n"
+            "- If the answer is not supported by the snippets, say so clearly.\n"
+            "- Respond in Simplified Chinese when the question is Chinese.\n\n"
+            f"Question:\n{user_question.strip()}\n\n"
+            f"Source:\n{source}\n\n"
+            "Retrieved snippets:\n"
+            f"{combined_text.strip()[:5000]}"
+        )
+        try:
+            remote_message = self._invoke_remote_chat(
+                [HumanMessage(content=retrieval_prompt)],
+                tools=None,
+            )
+        except Exception as exc:
+            self._log_remote_issue("retrieval-grounded answer failed", exc)
+            return None
+
+        content = self._normalize_remote_content(remote_message.get("content", ""))
+        if not content:
+            return None
+
+        if self._contains_cjk(user_question):
+            return f"根据已上传文档[{source}]，{content}"
+        return f"According to the uploaded document [{source}], {content}"
+
+    @staticmethod
+    def _normalize_candidate_sentence(sentence: str) -> str:
+        """Clean one retrieved text fragment before heuristic answer selection."""
+        cleaned = sentence.strip()
+        cleaned = re.sub(r"^#{1,6}\s*", "", cleaned)
+        cleaned = re.sub(r"^[-*]\s+", "", cleaned)
+        cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
+        return cleaned.strip()
 
     def _structured_rag_answer(
         self,

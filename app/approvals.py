@@ -37,6 +37,7 @@ class ApprovalStoreSettings:
     """Environment-backed settings for approval persistence."""
 
     database_url: str
+    connect_timeout_seconds: int = 5
 
     @classmethod
     def from_env(cls) -> ApprovalStoreSettings:
@@ -44,7 +45,11 @@ class ApprovalStoreSettings:
         database_url = os.getenv("DATABASE_URL")
         if not database_url:
             raise RuntimeError("DATABASE_URL must be set to enable approval persistence")
-        return cls(database_url=database_url)
+        timeout_raw = os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5").strip()
+        return cls(
+            database_url=database_url,
+            connect_timeout_seconds=max(1, int(timeout_raw or "5")),
+        )
 
 
 class ApprovalStore:
@@ -347,6 +352,7 @@ class ApprovalStore:
             autocommit=True,
             prepare_threshold=0,
             row_factory=dict_row,
+            connect_timeout=self._settings.connect_timeout_seconds,
         )
 
 

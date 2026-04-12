@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shlex
+import sys
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ class MCPClientSettings:
     args: list[str]
     cwd: str | None
     timeout_seconds: float
+    startup_timeout_seconds: float
     approval_required_tools: set[str]
     allowed_root: str | None
 
@@ -54,7 +56,7 @@ class MCPClientSettings:
         enabled = bool(command_line)
         if enabled:
             parts = shlex.split(command_line, posix=False)
-            command = parts[0]
+            command = cls._normalize_python_command(parts[0])
             args = parts[1:]
         else:
             command = ""
@@ -75,9 +77,18 @@ class MCPClientSettings:
             args=args,
             cwd=os.getenv("MCP_SERVER_CWD"),
             timeout_seconds=float(os.getenv("MCP_SERVER_TIMEOUT_SECONDS", "20")),
+            startup_timeout_seconds=float(os.getenv("MCP_SERVER_STARTUP_TIMEOUT_SECONDS", "10")),
             approval_required_tools=approval_required,
             allowed_root=os.getenv("MCP_ALLOWED_ROOT"),
         )
+
+    @staticmethod
+    def _normalize_python_command(command: str) -> str:
+        """Prefer the current interpreter when env config uses a generic Python launcher."""
+        lowered = command.lower()
+        if lowered in {"python", "python.exe", "py", "py.exe"}:
+            return sys.executable
+        return command
 
 
 class MCPClientBridge:
@@ -91,7 +102,10 @@ class MCPClientBridge:
         """Discover tools from the configured MCP server."""
         if not self._settings.enabled:
             return
-        self._tool_definitions = await self._discover_tools()
+        self._tool_definitions = await asyncio.wait_for(
+            self._discover_tools(),
+            timeout=self._settings.startup_timeout_seconds,
+        )
 
     async def close(self) -> None:
         """Close hook for symmetry with app lifespan management."""

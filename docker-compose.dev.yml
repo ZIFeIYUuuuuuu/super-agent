@@ -1,0 +1,27 @@
+services:
+  redis:
+    ports:
+      - "63790:6379"
+
+  backend:
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8010",
+        "--reload",
+      ]
+    volumes:
+      - .:/app
+
+  frontend:
+    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3100"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next

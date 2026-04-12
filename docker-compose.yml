@@ -1,0 +1,81 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: super_agent_redis
+    ports:
+      - "63790:6379"
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: super_agent_db
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-super_agent}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-super_agent}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: super_agent_backend
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-super_agent}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_HISTORY_MAX_MESSAGES: ${REDIS_HISTORY_MAX_MESSAGES:-40}
+      REDIS_HISTORY_TTL_SECONDS: ${REDIS_HISTORY_TTL_SECONDS:-2592000}
+      FRONTEND_URL: http://127.0.0.1:3100
+      PDF_OUTPUT_DIR: generated-pdfs
+      AGENT_PDF_OUTPUT_DIR: generated-pdfs
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      TAVILY_API_URL: ${TAVILY_API_URL:-https://api.tavily.com/search}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-qwen-plus}
+      MCP_MOCK_ENABLED: ${MCP_MOCK_ENABLED:-true}
+      MCP_TEST_MODE: ${MCP_TEST_MODE:-true}
+      MCP_SERVER_COMMAND: ${MCP_SERVER_COMMAND:-python -m app.mcp_demo_server}
+      ALLOW_LOCAL_TOOL_URLS: ${ALLOW_LOCAL_TOOL_URLS:-false}
+      AGENT_NODE_TIMING: ${AGENT_NODE_TIMING:-true}
+    ports:
+      - "8010:8010"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: super_agent_frontend
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      BACKEND_URL: http://backend:8010
+      PORT: 3100
+    ports:
+      - "3100:3100"
+
+volumes:
+  pgdata:

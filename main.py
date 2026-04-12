@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, AsyncIterator
 
 from app.env_loader import load_env_file
@@ -10,25 +10,32 @@ from app.env_loader import load_env_file
 load_env_file()
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from app.agent import AgentRuntime, managed_agent_runtime
 from app.approvals import ApprovalRecord, ApprovalStore, managed_approval_store
+from app.history_cache import HistoryCache, managed_history_cache
 from app.mcp_client import MCPClientBridge, managed_mcp_client
 from app.models import (
     ApprovalDecisionPathRequest,
     ApprovalDecisionRequest,
     ApprovalStatusResponse,
+    CachedHistoryMessage,
     ChatCompletionRequest,
     ChatStreamEvent,
     KnowledgeStatusResponse,
     KnowledgeUploadResponse,
     PendingApprovalResponse,
+    ThreadHistoryResponse,
 )
 from app.persistence import managed_postgres_checkpointer
 from app.rag import IngestResult, KnowledgeBase, KnowledgeBaseStatus, managed_knowledge_base
-from app.streaming import collect_chat_events, format_sse_data, stream_chat_events
+from app.streaming import (
+    collect_chat_events,
+    decode_sse_data_line,
+    format_sse_data,
+    stream_chat_events,
+)
 
 
 @asynccontextmanager
@@ -37,30 +44,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict[str, Any]]:
     async with managed_postgres_checkpointer() as checkpoint_store:
         async with managed_knowledge_base() as knowledge_base:
             async with managed_approval_store() as approval_store:
-                async with managed_mcp_client() as mcp_client:
-                    async with managed_agent_runtime(
-                        checkpoint_store.checkpointer,
-                        knowledge_base,
-                        approval_store,
-                        mcp_client,
-                    ) as runtime:
-                        resources: dict[str, Any] = {
-                            "service": "agent-backend-ready",
-                            "agent_runtime": runtime,
-                            "checkpoint_store": checkpoint_store,
-                            "knowledge_base": knowledge_base,
-                            "approval_store": approval_store,
-                            "mcp_client": mcp_client,
-                        }
-                        app.state.agent_runtime = runtime
-                        app.state.checkpoint_store = checkpoint_store
-                        app.state.knowledge_base = knowledge_base
-                        app.state.approval_store = approval_store
-                        app.state.mcp_client = mcp_client
-                        try:
-                            yield resources
-                        finally:
-                            resources.clear()
+                async with managed_history_cache() as history_cache:
+                    async with managed_mcp_client() as mcp_client:
+                        async with managed_agent_runtime(
+                            checkpoint_store.checkpointer,
+                            knowledge_base,
+                            approval_store,
+                            mcp_client,
+                        ) as runtime:
+                            resources: dict[str, Any] = {
+                                "service": "agent-backend-ready",
+                                "agent_runtime": runtime,
+                                "checkpoint_store": checkpoint_store,
+                                "knowledge_base": knowledge_base,
+                                "approval_store": approval_store,
+                                "history_cache": history_cache,
+                                "mcp_client": mcp_client,
+                            }
+                            app.state.agent_runtime = runtime
+                            app.state.checkpoint_store = checkpoint_store
+                            app.state.knowledge_base = knowledge_base
+                            app.state.approval_store = approval_store
+                            app.state.history_cache = history_cache
+                            app.state.mcp_client = mcp_client
+                            try:
+                                yield resources
+                            finally:
+                                resources.clear()
 
 
 app = FastAPI(
@@ -69,27 +79,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-WEB_ROOT = PROJECT_ROOT / "web"
-WEB_INDEX = WEB_ROOT / "index.html"
-
-# Mount static assets for the SPA without requiring the directory to exist yet.
-app.mount(
-    "/web",
-    StaticFiles(directory=str(WEB_ROOT), check_dir=False),
-    name="web",
-)
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:3100").strip()
 
 
 @app.get("/", include_in_schema=False)
 async def index() -> Response:
-    """Serve SPA entrypoint for the unified frontend workspace."""
-    if WEB_INDEX.exists():
-        return FileResponse(WEB_INDEX)
+    """Redirect the root entrypoint to the Next.js frontend application."""
+    if FRONTEND_URL:
+        return RedirectResponse(url=FRONTEND_URL, status_code=307)
     return JSONResponse(
-        status_code=404,
+        status_code=503,
         content={
-            "detail": "Frontend entrypoint is not available yet. Expected web/index.html.",
+            "detail": "Next.js frontend URL is not configured. Set FRONTEND_URL to continue.",
         },
     )
 
@@ -181,6 +182,24 @@ def _approval_response(record: ApprovalRecord) -> ApprovalStatusResponse:
     )
 
 
+def _latest_user_cache_message(payload: ChatCompletionRequest) -> CachedHistoryMessage | None:
+    """Convert the newest user request message into one cache entry."""
+    for item in reversed(payload.messages):
+        content = item.content.strip()
+        if item.role == "user" and content:
+            return HistoryCache.build_message(kind="user", content=content)
+    return None
+
+
+def _cache_messages_from_events(events: list[ChatStreamEvent]) -> list[CachedHistoryMessage]:
+    """Convert normalized stream events into cacheable history entries."""
+    return [
+        HistoryCache.build_message(kind=event.type, content=event.content)
+        for event in events
+        if event.content.strip()
+    ]
+
+
 @app.post("/v1/knowledge/upload", response_model=KnowledgeUploadResponse)
 async def upload_knowledge_document_legacy(
     request: Request,
@@ -214,6 +233,18 @@ async def upload_knowledge_document(
         _pick_upload_file(file, upload, document),
         namespace_id,
         thread_id,
+    )
+
+
+@app.get("/v1/threads/{thread_id}/history", response_model=ThreadHistoryResponse)
+async def thread_history(thread_id: str, request: Request) -> ThreadHistoryResponse:
+    """Return recent hot-cached chat history for one thread."""
+    history_cache: HistoryCache = request.app.state.history_cache
+    messages = await history_cache.get_messages(thread_id)
+    return ThreadHistoryResponse(
+        thread_id=thread_id,
+        messages=messages,
+        cached=await history_cache.is_enabled(),
     )
 
 
@@ -298,6 +329,7 @@ async def chat_completions(
 ) -> Response:
     """Provide SSE chat completions backed by a LangGraph workflow."""
     runtime: AgentRuntime = request.app.state.agent_runtime
+    history_cache: HistoryCache = request.app.state.history_cache
     thread_id: str = runtime.resolve_thread_id(payload)
     can_resume = await runtime.has_resumable_approval(thread_id)
     if not payload.messages and not can_resume:
@@ -305,6 +337,10 @@ async def chat_completions(
             status_code=400,
             detail="messages must not be empty unless the thread is resuming from approval",
         )
+
+    latest_user_cache = _latest_user_cache_message(payload)
+    if latest_user_cache is not None:
+        await history_cache.append_messages(thread_id=thread_id, messages=[latest_user_cache])
 
     if payload.stream:
         event_iterator: AsyncIterator[str] = stream_chat_events(payload, runtime, thread_id)
@@ -322,18 +358,30 @@ async def chat_completions(
             ) from exc
 
         async def event_stream() -> AsyncIterator[str]:
-            yield first_event
+            cached_events: list[CachedHistoryMessage] = []
             try:
+                first_decoded = decode_sse_data_line(first_event)
+                if first_decoded is not None:
+                    cached_events.extend(_cache_messages_from_events([first_decoded]))
+                yield first_event
                 async for raw_event in event_iterator:
                     if await request.is_disconnected():
                         break
+                    decoded = decode_sse_data_line(raw_event)
+                    if decoded is not None:
+                        cached_events.extend(_cache_messages_from_events([decoded]))
                     yield raw_event
             except Exception:
-                yield format_sse_data(
-                    ChatStreamEvent(
-                        type="error",
-                        content="Agent execution failed during streaming",
-                    )
+                error_event = ChatStreamEvent(
+                    type="error",
+                    content="Agent execution failed during streaming",
+                )
+                cached_events.extend(_cache_messages_from_events([error_event]))
+                yield format_sse_data(error_event)
+            finally:
+                await history_cache.append_messages(
+                    thread_id=thread_id,
+                    messages=cached_events,
                 )
 
         return StreamingResponse(
@@ -351,6 +399,10 @@ async def chat_completions(
         payload,
         runtime,
         thread_id,
+    )
+    await history_cache.append_messages(
+        thread_id=thread_id,
+        messages=_cache_messages_from_events(collected_events),
     )
 
     answer_content: str = next(
@@ -387,4 +439,4 @@ async def chat_completions(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=8010, reload=False)

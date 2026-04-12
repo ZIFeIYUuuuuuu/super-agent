@@ -1,0 +1,46 @@
+:root {
+  color-scheme: dark;
+  --page-background:
+    radial-gradient(circle at top left, rgba(123, 193, 255, 0.16), transparent 24%),
+    radial-gradient(circle at 78% 18%, rgba(177, 231, 255, 0.12), transparent 24%),
+    linear-gradient(180deg, #07111d 0%, #0a1220 48%, #08101a 100%);
+  --page-foreground: #f5f8ff;
+  --page-muted: rgba(215, 226, 241, 0.72);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: auto;
+}
+
+body {
+  margin: 0;
+  background: var(--page-background);
+  color: var(--page-foreground);
+  font-family:
+    "SF Pro Display",
+    "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(135, 198, 255, 0.24);
+  color: #ffffff;
+}

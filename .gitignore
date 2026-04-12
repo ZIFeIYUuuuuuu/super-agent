@@ -1,17 +1,50 @@
-# Local secrets and virtual environments
+# Environment and secrets
 .env
+.env.*
+!.env.example
+frontend/.env.local
+frontend/.env.*.local
+
+# Python
 .venv/
-
-# Python caches
+venv/
 __pycache__/
-app/__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
-# IDE files
+# Node / Next.js
+node_modules/
+.next/
+out/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE and editor files
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
-# Local databases, logs, and runtime artifacts
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local databases, containers, and runtime artifacts
 .pgdata-*/
 .pgdata-*.log
 generated-pdfs/
@@ -20,3 +53,10 @@ generated-pdfs/
 .approval-test-artifacts/
 service.stdout.log
 service.stderr.log
+*.pid
+
+# Build and temporary outputs
+dist/
+build/
+tmp/
+temp/
