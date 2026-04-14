@@ -18,13 +18,28 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command, interrupt
 
 from app.approvals import ApprovalStore
-from app.llm import DeterministicToolCallingLLM, LLMDecision
+from app.llm import (
+    DeterministicToolCallingLLM,
+    EvidenceReviewDecision,
+    LLMDecision,
+    RetrievalPlanDecision,
+)
 from app.mcp_client import MCPClientBridge
 from app.models import ChatCompletionRequest, ChatMessage
-from app.rag import KnowledgeBase
+from app.rag import KnowledgeBase, RetrievedChunk
 from app.tools import get_agent_tools
 
-NextStep = Literal["approval_gate", "await_approval", "tools", "emit_answer", "finish"]
+NextStep = Literal[
+    "retrieve_context",
+    "review_retrieval",
+    "rewrite_retrieval_query",
+    "call_model",
+    "approval_gate",
+    "await_approval",
+    "tools",
+    "emit_answer",
+    "finish",
+]
 
 
 class AgentState(TypedDict):
@@ -38,9 +53,18 @@ class AgentState(TypedDict):
     answer: str
     thread_id: str
     knowledge_namespace: str
+    rag_plan_query: str
+    retrieval_subquestions: list[str]
+    retrieval_query_plan: list[str]
+    retrieval_query_cursor: int
+    retrieval_round: int
+    max_retrieval_rounds: int
     retrieval_queries: list[str]
+    retrieval_query_history: list[str]
+    retrieval_evidence_gap: str
     retrieval_hits: list[dict[str, Any]]
     retrieval_context: str
+    use_retrieval_context: bool
     pending_approval_id: str
     approval_status: str
     approval_summary: str
@@ -150,14 +174,39 @@ class AgentRuntime:
 
     def _build_graph(self):
         builder = StateGraph(AgentState)
+        builder.add_node("plan_retrieval", self._timed_sync_node("plan_retrieval", self.plan_retrieval))
         builder.add_node("retrieve_context", self._timed_sync_node("retrieve_context", self.retrieve_context))
+        builder.add_node("review_retrieval", self._timed_sync_node("review_retrieval", self.review_retrieval))
+        builder.add_node(
+            "rewrite_retrieval_query",
+            self._timed_sync_node("rewrite_retrieval_query", self.rewrite_retrieval_query),
+        )
         builder.add_node("call_model", self._timed_sync_node("call_model", self.call_model))
         builder.add_node("approval_gate", self._timed_sync_node("approval_gate", self.approval_gate))
         builder.add_node("await_approval", self._timed_sync_node("await_approval", self.await_approval))
         builder.add_node("tools", self._timed_sync_node("tools", self.run_tools))
         builder.add_node("emit_answer", self._timed_sync_node("emit_answer", self.emit_answer))
-        builder.add_edge(START, "retrieve_context")
-        builder.add_edge("retrieve_context", "call_model")
+        builder.add_edge(START, "plan_retrieval")
+        builder.add_conditional_edges(
+            "plan_retrieval",
+            self.route_next_step,
+            {
+                "retrieve_context": "retrieve_context",
+                "call_model": "call_model",
+                "finish": END,
+            },
+        )
+        builder.add_edge("retrieve_context", "review_retrieval")
+        builder.add_conditional_edges(
+            "review_retrieval",
+            self.route_next_step,
+            {
+                "rewrite_retrieval_query": "rewrite_retrieval_query",
+                "call_model": "call_model",
+                "finish": END,
+            },
+        )
+        builder.add_edge("rewrite_retrieval_query", "retrieve_context")
         builder.add_conditional_edges(
             "call_model",
             self.route_next_step,
@@ -190,23 +239,69 @@ class AgentRuntime:
         builder.add_edge("emit_answer", END)
         return builder.compile(checkpointer=self._checkpointer)
 
+    def plan_retrieval(self, state: AgentState) -> dict[str, object]:
+        """Planner agent that decides whether retrieval should run for this turn."""
+        namespace_id = state["knowledge_namespace"].strip()
+        knowledge_available = False
+        if namespace_id:
+            try:
+                knowledge_available = asyncio.run(self._knowledge_base.has_documents(namespace_id))
+            except Exception:
+                knowledge_available = False
+
+        decision: RetrievalPlanDecision = self._llm.plan_retrieval(
+            state["messages"],
+            knowledge_namespace=namespace_id,
+            knowledge_available=knowledge_available,
+            retrieved_chunks=state.get("retrieval_hits", []),
+        )
+        return {
+            "next_step": decision.next_step,
+            "thought": decision.thought,
+            "rag_plan_query": decision.initial_query or decision.retrieval_goal,
+            "retrieval_subquestions": list(decision.subquestions),
+            "retrieval_query_plan": list(decision.planned_queries),
+            "retrieval_query_cursor": 0,
+            "retrieval_round": 0,
+            "max_retrieval_rounds": int(state.get("max_retrieval_rounds", 2)),
+            "retrieval_queries": [],
+            "retrieval_query_history": [],
+            "retrieval_evidence_gap": "",
+            "retrieval_hits": [],
+            "retrieval_context": "",
+            "use_retrieval_context": False,
+        }
+
     def retrieve_context(self, state: AgentState) -> dict[str, object]:
         """Retrieve private knowledge snippets and stage them for system injection."""
-        latest_user_message = self._latest_user_message(state["messages"])
+        latest_user_message = str(state.get("rag_plan_query", "")).strip() or self._latest_user_message(state["messages"])
         namespace_id = state["knowledge_namespace"].strip()
+        planned_queries = [
+            str(item).strip()
+            for item in state.get("retrieval_query_plan", [])
+            if str(item).strip()
+        ]
+        query_batch = (
+            planned_queries
+            if int(state.get("retrieval_round", 0)) == 0 and planned_queries
+            else [latest_user_message]
+        )
         if not latest_user_message or not namespace_id:
             return {
                 "retrieval_queries": [],
                 "retrieval_hits": [],
                 "retrieval_context": "",
+                "use_retrieval_context": False,
+                "retrieval_evidence_gap": "",
                 "thought": "",
             }
 
         try:
             queries, hits, context = asyncio.run(
-                self._knowledge_base.retrieve(
+                self._run_retrieval_batch(
                     namespace_id=namespace_id,
-                    question=latest_user_message,
+                    user_question=self._latest_user_message(state["messages"]) or latest_user_message,
+                    query_batch=query_batch,
                 )
             )
         except Exception as exc:
@@ -214,37 +309,119 @@ class AgentRuntime:
                 "retrieval_queries": [],
                 "retrieval_hits": [],
                 "retrieval_context": "",
+                "use_retrieval_context": False,
+                "retrieval_evidence_gap": "",
                 "thought": f"Knowledge retrieval was skipped because the retriever failed: {exc}",
             }
 
         if not hits:
             return {
                 "retrieval_queries": queries,
+                "retrieval_query_history": self._append_query_history(
+                    state.get("retrieval_query_history", []),
+                    query_batch,
+                ),
                 "retrieval_hits": [],
                 "retrieval_context": "",
+                "use_retrieval_context": False,
+                "retrieval_round": int(state.get("retrieval_round", 0)) + 1,
+                "retrieval_query_cursor": len(query_batch),
+                "retrieval_evidence_gap": "",
                 "thought": "",
             }
 
         return {
             "retrieval_queries": queries,
+            "retrieval_query_history": self._append_query_history(
+                state.get("retrieval_query_history", []),
+                query_batch,
+            ),
             "retrieval_hits": [asdict(hit) for hit in hits],
             "retrieval_context": context,
+            "use_retrieval_context": True,
+            "retrieval_round": int(state.get("retrieval_round", 0)) + 1,
+            "retrieval_query_cursor": len(query_batch),
+            "retrieval_evidence_gap": "",
             "thought": (
                 f"Knowledge retrieval matched {len(hits)} chunk(s) in namespace "
-                f"{namespace_id}; reranked context is ready."
+                f"{namespace_id}; reranked context is ready for {len(query_batch)} planned query(s)."
             ),
+        }
+
+    def review_retrieval(self, state: AgentState) -> dict[str, object]:
+        """Evidence-review agent that keeps or drops retrieved context before response synthesis."""
+        decision: EvidenceReviewDecision = self._llm.review_retrieval(
+            state["messages"],
+            retrieved_chunks=state.get("retrieval_hits", []),
+            retrieval_round=int(state.get("retrieval_round", 0)),
+            max_retrieval_rounds=int(state.get("max_retrieval_rounds", 2)),
+            active_query=str(state.get("rag_plan_query", "")),
+        )
+        use_retrieval_context = decision.use_retrieval_context
+        return {
+            "next_step": decision.next_step,
+            "thought": decision.thought,
+            "rag_plan_query": decision.retry_query or str(state.get("rag_plan_query", "")),
+            "use_retrieval_context": use_retrieval_context,
+            "retrieval_evidence_gap": decision.evidence_gap,
+            "retrieval_hits": state.get("retrieval_hits", []) if use_retrieval_context else [],
+            "retrieval_context": str(state.get("retrieval_context", "")) if use_retrieval_context else "",
+        }
+
+    def rewrite_retrieval_query(self, state: AgentState) -> dict[str, object]:
+        """Commit a rewritten retrieval query before the next retrieval hop."""
+        retry_query = str(state.get("rag_plan_query", "")).strip()
+        attempted_queries = {
+            " ".join(query.split()).lower() for query in state.get("retrieval_query_history", [])
+        }
+        if retry_query:
+            normalized_retry = " ".join(retry_query.split()).lower()
+            if normalized_retry not in attempted_queries:
+                return {
+                    "next_step": "retrieve_context",
+                    "thought": (
+                        "The first retrieval hop was inconclusive, so the agent is retrying with a narrower private-knowledge query."
+                    ),
+                    "use_retrieval_context": False,
+                    "retrieval_hits": [],
+                    "retrieval_context": "",
+                }
+
+        query_plan = [
+            str(query).strip() for query in state.get("retrieval_query_plan", []) if str(query).strip()
+        ]
+        cursor = int(state.get("retrieval_query_cursor", 0))
+        while cursor < len(query_plan):
+            candidate = query_plan[cursor]
+            cursor += 1
+            if " ".join(candidate.split()).lower() in attempted_queries:
+                continue
+            return {
+                "next_step": "retrieve_context",
+                "thought": "The retriever is advancing to the next planned private-knowledge query.",
+                "rag_plan_query": candidate,
+                "retrieval_query_cursor": cursor,
+                "use_retrieval_context": False,
+                "retrieval_hits": [],
+                "retrieval_context": "",
+            }
+
+        return {
+            "next_step": "call_model",
+            "thought": "No safe follow-up retrieval query remained, so the agent will continue with the normal reasoning flow.",
         }
 
     def call_model(self, state: AgentState) -> dict[str, object]:
         """Call the deterministic planner and record the next action."""
         augmented_messages = list(state["messages"])
-        retrieval_context = state["retrieval_context"].strip()
+        use_retrieval_context = bool(state.get("use_retrieval_context", False))
+        retrieval_context = str(state.get("retrieval_context", "")).strip() if use_retrieval_context else ""
         if retrieval_context:
             augmented_messages = [SystemMessage(content=retrieval_context), *augmented_messages]
 
         decision: LLMDecision = self._llm.invoke(
             augmented_messages,
-            retrieved_chunks=state["retrieval_hits"],
+            retrieved_chunks=state.get("retrieval_hits", []) if use_retrieval_context else [],
         )
         next_step: NextStep = "approval_gate" if decision.next_step == "tools" else decision.next_step
         return {
@@ -397,9 +574,18 @@ class AgentRuntime:
             answer="",
             thread_id=thread_id,
             knowledge_namespace=namespace_id,
+            rag_plan_query="",
+            retrieval_subquestions=[],
+            retrieval_query_plan=[],
+            retrieval_query_cursor=0,
+            retrieval_round=0,
+            max_retrieval_rounds=2,
             retrieval_queries=[],
+            retrieval_query_history=[],
+            retrieval_evidence_gap="",
             retrieval_hits=[],
             retrieval_context="",
+            use_retrieval_context=False,
             pending_approval_id="",
             approval_status="",
             approval_summary="",
@@ -512,6 +698,60 @@ class AgentRuntime:
             return f"{tool_name} requested for file '{path}'"
         compact_args = json.dumps(tool_args, ensure_ascii=False)[:200]
         return f"{tool_name} requested with args {compact_args}"
+
+    @staticmethod
+    def _append_query_history(history: list[str], queries: str | list[str]) -> list[str]:
+        """Append one or more normalized retrieval queries to the query history."""
+        updated = list(history)
+        raw_queries = [queries] if isinstance(queries, str) else list(queries)
+        for query in raw_queries:
+            normalized = " ".join(str(query).split())
+            if not normalized:
+                continue
+            updated.append(normalized)
+        return updated
+
+    async def _run_retrieval_batch(
+        self,
+        *,
+        namespace_id: str,
+        user_question: str,
+        query_batch: list[str],
+    ) -> tuple[list[str], list[RetrievedChunk], str]:
+        """Run one planned retrieval batch and merge the strongest hits across queries."""
+        merged_queries: list[str] = []
+        candidate_map: dict[int, RetrievedChunk] = {}
+
+        for query in query_batch:
+            planned_query = str(query).strip()
+            if not planned_query:
+                continue
+            queries, hits, _ = await self._knowledge_base.retrieve(
+                namespace_id=namespace_id,
+                question=planned_query,
+            )
+            merged_queries.extend(queries)
+            for hit in hits:
+                existing = candidate_map.get(hit.chunk_id)
+                if existing is None:
+                    candidate_map[hit.chunk_id] = hit
+                    continue
+                if hit.rerank_score > existing.rerank_score:
+                    candidate_map[hit.chunk_id] = hit
+
+        if not candidate_map:
+            return merged_queries, [], ""
+
+        merged_hits = sorted(
+            candidate_map.values(),
+            key=lambda item: item.rerank_score,
+            reverse=True,
+        )[:4]
+        context = self._knowledge_base.build_rag_system_message(
+            question=user_question.strip() or query_batch[0],
+            hits=merged_hits,
+        )
+        return merged_queries, merged_hits, context
 
     def _timed_sync_node(
         self,

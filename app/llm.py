@@ -32,6 +32,58 @@ class LLMDecision(BaseModel):
     )
 
 
+class RetrievalPlanDecision(BaseModel):
+    """Planner-agent output for deciding whether retrieval should run."""
+
+    thought: str = Field(..., description="Planning thought text for SSE streaming.")
+    next_step: Literal["retrieve_context", "call_model", "finish"] = Field(
+        ...,
+        description="Next graph node selected by the retrieval planner.",
+    )
+    retrieval_goal: str = Field(
+        default="",
+        description="Optional natural-language retrieval goal captured by the planner.",
+    )
+    planned_queries: list[str] = Field(
+        default_factory=list,
+        description="Ordered retrieval-plan queries produced before the first retrieval hop.",
+    )
+    subquestions: list[str] = Field(
+        default_factory=list,
+        description="Decomposed subquestions extracted from the original user request.",
+    )
+    initial_query: str = Field(
+        default="",
+        description="First retrieval query to execute for the planned retrieval pass.",
+    )
+
+
+class EvidenceReviewDecision(BaseModel):
+    """Reviewer-agent output for deciding whether retrieved evidence should be kept."""
+
+    thought: str = Field(..., description="Evidence review thought text for SSE streaming.")
+    next_step: Literal["rewrite_retrieval_query", "call_model", "finish"] = Field(
+        ...,
+        description="Next graph node selected by the evidence reviewer.",
+    )
+    use_retrieval_context: bool = Field(
+        ...,
+        description="Whether retrieved chunks should be injected into the responder context.",
+    )
+    retry_query: str = Field(
+        default="",
+        description="Rewritten retrieval query for the next hop when another retrieval round is needed.",
+    )
+    evidence_gap: str = Field(
+        default="",
+        description="Short description of what evidence was missing or why the current hits were rejected.",
+    )
+    confidence_level: Literal["high", "partial", "low"] = Field(
+        default="low",
+        description="Confidence tier assigned by the evidence reviewer.",
+    )
+
+
 class DeterministicToolCallingLLM:
     """Deterministic planner that drives tools, RAG, MCP and HITL loops locally."""
 
@@ -147,6 +199,159 @@ class DeterministicToolCallingLLM:
         """Async wrapper for deterministic invocation."""
         await asyncio.sleep(0.02)
         return self.invoke(messages, retrieved_chunks=retrieved_chunks)
+
+    def plan_retrieval(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        knowledge_namespace: str,
+        knowledge_available: bool | None = None,
+        retrieved_chunks: list[dict[str, Any]] | None = None,
+    ) -> RetrievalPlanDecision:
+        """Planner agent that decides whether this turn should ground on private knowledge."""
+        latest_user_message = self._latest_user_message(messages).strip()
+        if not latest_user_message:
+            return RetrievalPlanDecision(
+                thought="No user message is available, so retrieval planning stops for this turn.",
+                next_step="finish",
+            )
+
+        if retrieved_chunks:
+            return RetrievalPlanDecision(
+                thought="Retrieved evidence is already attached to this turn, so response synthesis can continue.",
+                next_step="call_model",
+            )
+
+        if not knowledge_namespace.strip():
+            return RetrievalPlanDecision(
+                thought="No private knowledge namespace is configured for this turn, so retrieval is skipped.",
+                next_step="call_model",
+            )
+
+        if knowledge_available is False:
+            return RetrievalPlanDecision(
+                thought="This namespace has no uploaded private knowledge yet, so retrieval is skipped for now.",
+                next_step="call_model",
+            )
+
+        if self._should_bypass_retrieval(messages, latest_user_message):
+            return RetrievalPlanDecision(
+                thought="The planner classified this request as direct chat or tool work, so private retrieval is skipped.",
+                next_step="call_model",
+            )
+
+        if self._looks_like_smalltalk(latest_user_message):
+            return RetrievalPlanDecision(
+                thought="The request looks conversational, so the first pass skips private-knowledge retrieval.",
+                next_step="call_model",
+            )
+
+        if self._looks_like_retrieval_request(latest_user_message) or knowledge_available:
+            subquestions = self._build_retrieval_subquestions(latest_user_message)
+            planned_queries = self._build_retrieval_plan_queries(latest_user_message)
+            return RetrievalPlanDecision(
+                thought="The planner wants private knowledge retrieval before the responder writes the answer.",
+                next_step="retrieve_context",
+                retrieval_goal=latest_user_message[:200],
+                planned_queries=planned_queries,
+                subquestions=subquestions,
+                initial_query=(planned_queries[0] if planned_queries else latest_user_message[:200]),
+            )
+
+        return RetrievalPlanDecision(
+            thought="The planner found no strong need for private grounding before the first model pass.",
+            next_step="call_model",
+        )
+
+    def review_retrieval(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        retrieved_chunks: Sequence[dict[str, Any]],
+        retrieval_round: int = 1,
+        max_retrieval_rounds: int = 1,
+        active_query: str = "",
+    ) -> EvidenceReviewDecision:
+        """Reviewer agent that decides whether retrieved evidence should remain in context."""
+        latest_user_message = self._latest_user_message(messages).strip()
+        if not retrieved_chunks:
+            retry_query = ""
+            if self._should_retry_retrieval(
+                latest_user_message,
+                retrieval_round=retrieval_round,
+                max_retrieval_rounds=max_retrieval_rounds,
+            ):
+                retry_query = self._rewrite_retrieval_query(
+                    user_question=latest_user_message,
+                    last_query=active_query or latest_user_message,
+                    retrieved_chunks=retrieved_chunks,
+                )
+            if retry_query:
+                return EvidenceReviewDecision(
+                    thought="No useful private-knowledge hits were found, so the retriever will try one narrower follow-up query.",
+                    next_step="rewrite_retrieval_query",
+                    use_retrieval_context=False,
+                    retry_query=retry_query,
+                    evidence_gap="No relevant private-knowledge hits were found in the first pass.",
+                    confidence_level="low",
+                )
+            return EvidenceReviewDecision(
+                thought="The retrieval worker found no private-knowledge evidence, so the responder continues without KB context.",
+                next_step="call_model",
+                use_retrieval_context=False,
+                evidence_gap="No relevant private-knowledge hits were found.",
+                confidence_level="low",
+            )
+
+        confidence_level, evidence_gap = self._classify_retrieval_confidence(
+            latest_user_message,
+            retrieved_chunks,
+        )
+        if confidence_level == "low":
+            retry_query = ""
+            if self._should_retry_retrieval(
+                latest_user_message,
+                retrieval_round=retrieval_round,
+                max_retrieval_rounds=max_retrieval_rounds,
+            ):
+                retry_query = self._rewrite_retrieval_query(
+                    user_question=latest_user_message,
+                    last_query=active_query or latest_user_message,
+                    retrieved_chunks=retrieved_chunks,
+                )
+            if retry_query:
+                return EvidenceReviewDecision(
+                    thought="The first retrieval hop was too weak, so the retriever will try a rewritten follow-up query.",
+                    next_step="rewrite_retrieval_query",
+                    use_retrieval_context=False,
+                    retry_query=retry_query,
+                    evidence_gap=evidence_gap,
+                    confidence_level="low",
+                )
+            return EvidenceReviewDecision(
+                thought="Retrieved snippets were too weak or off-topic, so the responder continues without KB context.",
+                next_step="call_model",
+                use_retrieval_context=False,
+                evidence_gap=evidence_gap,
+                confidence_level="low",
+            )
+
+        if confidence_level == "partial":
+            return EvidenceReviewDecision(
+                thought="Retrieved evidence is only partially complete, but it is strong enough to answer the supported parts and note the remaining gap.",
+                next_step="call_model",
+                use_retrieval_context=True,
+                evidence_gap=evidence_gap,
+                confidence_level="partial",
+            )
+
+        return EvidenceReviewDecision(
+            thought="The evidence reviewer accepted the retrieved private-knowledge snippets for grounded answering.",
+            next_step="call_model",
+            use_retrieval_context=True,
+            evidence_gap=evidence_gap,
+            confidence_level="high",
+        )
 
     def _plan_mcp_delete_file(self, latest_user_message: str) -> LLMDecision | None:
         """Plan a high-risk MCP file deletion task when requested by the user."""
@@ -296,6 +501,12 @@ class DeterministicToolCallingLLM:
         combined_text = "\n".join(
             str(item.get("chunk_text", "")).strip() for item in retrieved_chunks if item
         ).strip()
+        grouped_answer = self._synthesize_grouped_retrieval_answer(
+            user_question=user_question,
+            retrieved_chunks=retrieved_chunks,
+        )
+        if grouped_answer is not None:
+            return grouped_answer
         structured_answer = self._structured_rag_answer(
             user_question=user_question,
             combined_text=combined_text,
@@ -303,6 +514,7 @@ class DeterministicToolCallingLLM:
                 f"{best_chunk.get('filename', 'document')}#chunk-"
                 f"{best_chunk.get('chunk_index', 0)}"
             ),
+            retrieved_chunks=retrieved_chunks,
         )
         if structured_answer is not None:
             return structured_answer
@@ -329,29 +541,10 @@ class DeterministicToolCallingLLM:
         if not sentences:
             sentences = [chunk_text]
 
-        def sentence_score(sentence: str) -> float:
-            lowered = sentence.lower()
-            overlap = sum(1.0 for term in question_terms if term in lowered)
-            numeric_bonus = 0.0
-            for token in re.findall(r"[A-Za-z0-9:-]+", user_question):
-                if token and token.lower() in lowered:
-                    numeric_bonus += 0.2
-            heading_penalty = 2.5 if sentence.lstrip().startswith("#") else 0.0
-            markdown_penalty = 0.8 if sentence.startswith(("-", "*", ">")) else 0.0
-            short_penalty = 0.6 if len(sentence.strip()) <= 12 else 0.0
-            answer_bonus = 0.0
-            if self._contains_cjk(user_question):
-                if "谁" in user_question and any(
-                    token in sentence for token in ("是", "名为", "叫做", "人物", "英雄")
-                ):
-                    answer_bonus += 1.2
-                if "什么" in user_question and any(
-                    token in sentence for token in ("是", "指", "由", "包括", "规定")
-                ):
-                    answer_bonus += 0.8
-            return overlap + numeric_bonus + answer_bonus - heading_penalty - markdown_penalty - short_penalty
-
-        best_sentence = max(sentences, key=sentence_score)
+        best_sentence = max(
+            sentences,
+            key=lambda sentence: self._sentence_score(user_question, question_terms, sentence),
+        )
         if self._contains_cjk(user_question):
             return (
                 "\u6839\u636e\u5df2\u4e0a\u4f20\u6587\u6863"
@@ -400,6 +593,106 @@ class DeterministicToolCallingLLM:
             return f"根据已上传文档[{source}]，{content}"
         return f"According to the uploaded document [{source}], {content}"
 
+    def _synthesize_grouped_retrieval_answer(
+        self,
+        *,
+        user_question: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
+    ) -> str | None:
+        """Synthesize one answer from multiple grouped evidence chunks for compound questions."""
+        subquestions = self._build_retrieval_subquestions(user_question)
+        if len(subquestions) <= 1 or len(retrieved_chunks) <= 1:
+            return None
+
+        grouped_parts: list[str] = []
+        grouped_sources: list[str] = []
+        seen_sentences: set[str] = set()
+        for subquestion in subquestions:
+            best_sentence, source = self._best_sentence_with_source(subquestion, retrieved_chunks)
+            if not best_sentence:
+                continue
+            key = best_sentence.lower()
+            if key in seen_sentences:
+                continue
+            seen_sentences.add(key)
+            grouped_parts.append(best_sentence)
+            if source:
+                grouped_sources.append(source)
+
+        if len(grouped_parts) < 2:
+            return None
+
+        source_label = self._group_source_refs(grouped_sources)
+        separator = "；" if self._contains_cjk(user_question) else "; "
+        prefix = "根据已上传文档" if self._contains_cjk(user_question) else "According to the uploaded documents "
+        if self._contains_cjk(user_question):
+            return f"{prefix}[{source_label}]，{separator.join(grouped_parts)}"
+        return f"{prefix}[{source_label}], {separator.join(grouped_parts)}."
+
+    def _best_sentence_with_source(
+        self,
+        question: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
+    ) -> tuple[str, str]:
+        """Pick the strongest evidence sentence plus its source reference for one subquestion."""
+        best_sentence = ""
+        best_source = ""
+        best_score = float("-inf")
+        question_terms = self._keywords(question)
+        for chunk in retrieved_chunks:
+            if not isinstance(chunk, dict):
+                continue
+            source = (
+                f"{chunk.get('filename', 'document')}#chunk-"
+                f"{chunk.get('chunk_index', 0)}"
+            )
+            chunk_text = str(chunk.get("chunk_text", "")).strip()
+            if not chunk_text:
+                continue
+            sentence_pattern = re.compile(r"[.!?。！？]\s*|\n+")
+            sentences = [
+                self._normalize_candidate_sentence(sentence)
+                for sentence in sentence_pattern.split(chunk_text)
+                if self._normalize_candidate_sentence(sentence)
+            ]
+            if not sentences:
+                sentences = [chunk_text]
+            for sentence in sentences:
+                score = self._sentence_score(question, question_terms, sentence)
+                if score > best_score:
+                    best_score = score
+                    best_sentence = sentence
+                    best_source = source
+        return best_sentence, best_source
+
+    def _sentence_score(
+        self,
+        question: str,
+        question_terms: Sequence[str],
+        sentence: str,
+    ) -> float:
+        """Score one candidate evidence sentence for a specific user question."""
+        lowered = sentence.lower()
+        overlap = sum(1.0 for term in question_terms if term in lowered)
+        numeric_bonus = 0.0
+        for token in re.findall(r"[A-Za-z0-9:-]+", question):
+            if token and token.lower() in lowered:
+                numeric_bonus += 0.2
+        heading_penalty = 2.5 if sentence.lstrip().startswith("#") else 0.0
+        markdown_penalty = 0.8 if sentence.startswith(("-", "*", ">")) else 0.0
+        short_penalty = 0.6 if len(sentence.strip()) <= 12 else 0.0
+        answer_bonus = 0.0
+        if self._contains_cjk(question):
+            if "谁" in question and any(
+                token in sentence for token in ("是", "名为", "叫做", "人物", "英雄")
+            ):
+                answer_bonus += 1.2
+            if "什么" in question and any(
+                token in sentence for token in ("是", "指", "由", "包括", "规定")
+            ):
+                answer_bonus += 0.8
+        return overlap + numeric_bonus + answer_bonus - heading_penalty - markdown_penalty - short_penalty
+
     @staticmethod
     def _normalize_candidate_sentence(sentence: str) -> str:
         """Clean one retrieved text fragment before heuristic answer selection."""
@@ -415,63 +708,143 @@ class DeterministicToolCallingLLM:
         user_question: str,
         combined_text: str,
         source: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
     ) -> str | None:
         """Prefer field extraction when retrieved text looks like labeled facts."""
         if not combined_text:
             return None
 
-        lowered_question = user_question.lower()
-        launch_date = self._extract_labeled_value(
-            combined_text,
-            ("launch date", "上线时间", "发布日期"),
-        )
-        security_phrase = self._extract_labeled_value(
-            combined_text,
-            ("security phrase", "安全短语", "口令"),
-        )
-        program_code = self._extract_labeled_value(
-            combined_text,
-            ("program code", "项目代号", "program code"),
-        )
-
-        wants_launch_date = any(
-            token in lowered_question
-            for token in ("launch date", "date", "什么时候", "哪天", "日期")
-        )
-        wants_security_phrase = any(
-            token in lowered_question
-            for token in ("security phrase", "phrase", "口令", "短语")
-        )
-        wants_program_code = any(
-            token in lowered_question
-            for token in ("program code", "code", "代号")
-        )
-
-        parts: list[str] = []
-        if wants_launch_date and launch_date:
-            parts.append(f"launch date is {launch_date}")
-        if wants_security_phrase and security_phrase:
-            parts.append(f"security phrase is {security_phrase}")
-        if wants_program_code and program_code:
-            parts.append(f"program code is {program_code}")
-
-        if not parts:
+        expected_fields = self._expected_labeled_fields(user_question)
+        if not expected_fields:
             return None
 
-        if self._contains_cjk(user_question):
-            translated: list[str] = []
-            if wants_launch_date and launch_date:
-                translated.append(f"上线日期是 {launch_date}")
-            if wants_security_phrase and security_phrase:
-                translated.append(f"安全短语是 {security_phrase}")
-            if wants_program_code and program_code:
-                translated.append(f"项目代号是 {program_code}")
-            return (
-                "\u6839\u636e\u5df2\u4e0a\u4f20\u6587\u6863"
-                f"[{source}]\uff0c" + "；".join(translated)
-            )
+        found_fields: list[tuple[str, str, str]] = []
+        missing_fields: list[str] = []
+        grouped_refs: list[str] = []
+        for field_name, labels in expected_fields.items():
+            value = self._extract_labeled_value(combined_text, labels)
+            if not value:
+                missing_fields.append(field_name)
+                continue
+            found_fields.append((field_name, value, self._best_source_for_labels(retrieved_chunks, labels)))
+            grouped_refs.append(self._best_source_for_labels(retrieved_chunks, labels))
 
-        return f"According to the uploaded document [{source}], " + "; ".join(parts) + "."
+        if not found_fields:
+            return None
+
+        grouped_sources = self._group_source_refs(grouped_refs) or source
+
+        if self._contains_cjk(user_question):
+            translated = [self._translate_structured_field(name, value) for name, value, _ in found_fields]
+            answer = (
+                "\u6839\u636e\u5df2\u4e0a\u4f20\u6587\u6863"
+                f"[{grouped_sources}]\uff0c" + "；".join(translated)
+            )
+            if missing_fields:
+                answer += f"；目前缺少这些字段的可靠证据：{self._translate_missing_fields(missing_fields)}"
+            return answer
+
+        parts = [self._format_structured_field(name, value) for name, value, _ in found_fields]
+        answer = f"According to the uploaded document [{grouped_sources}], " + "; ".join(parts) + "."
+        if missing_fields:
+            answer += f" Missing reliable evidence for: {', '.join(missing_fields)}."
+        return answer
+
+    def _best_source_for_labels(
+        self,
+        retrieved_chunks: Sequence[dict[str, Any]],
+        labels: tuple[str, ...],
+    ) -> str:
+        """Find the best source reference containing one of the requested labels."""
+        best_ref = ""
+        best_score = float("-inf")
+        for chunk in retrieved_chunks:
+            if not isinstance(chunk, dict):
+                continue
+            chunk_text = str(chunk.get("chunk_text", ""))
+            lowered = chunk_text.lower()
+            if not any(label.lower() in lowered for label in labels):
+                continue
+            score = float(chunk.get("rerank_score", chunk.get("vector_score", 0.0)))
+            if score > best_score:
+                best_score = score
+                best_ref = (
+                    f"{chunk.get('filename', 'document')}#chunk-"
+                    f"{chunk.get('chunk_index', 0)}"
+                )
+        return best_ref
+
+    def _expected_labeled_fields(
+        self,
+        user_question: str,
+    ) -> dict[str, tuple[str, ...]]:
+        """Return the structured fields explicitly requested by the user question."""
+        lowered_question = user_question.lower()
+        expected: dict[str, tuple[str, ...]] = {}
+        if any(
+            token in lowered_question
+            for token in ("launch date", "date", "什么时候", "哪天", "日期")
+        ):
+            expected["launch date"] = ("launch date", "上线时间", "发布日期")
+        if any(
+            token in lowered_question
+            for token in ("security phrase", "phrase", "口令", "短语")
+        ):
+            expected["security phrase"] = ("security phrase", "安全短语", "口令")
+        if any(
+            token in lowered_question
+            for token in ("program code", "code", "代号")
+        ):
+            expected["program code"] = ("program code", "项目代号")
+        return expected
+
+    @staticmethod
+    def _format_structured_field(field_name: str, value: str) -> str:
+        """Render one English structured field/value pair."""
+        return f"{field_name} is {value}"
+
+    @staticmethod
+    def _translate_structured_field(field_name: str, value: str) -> str:
+        """Render one Chinese structured field/value pair."""
+        translations = {
+            "launch date": "上线日期是",
+            "security phrase": "安全短语是",
+            "program code": "项目代号是",
+        }
+        return f"{translations.get(field_name, field_name)} {value}"
+
+    @staticmethod
+    def _translate_missing_fields(field_names: Sequence[str]) -> str:
+        """Translate missing field labels into concise Chinese."""
+        translations = {
+            "launch date": "上线日期",
+            "security phrase": "安全短语",
+            "program code": "项目代号",
+        }
+        return "、".join(translations.get(field_name, field_name) for field_name in field_names)
+
+    @staticmethod
+    def _group_source_refs(source_refs: Sequence[str]) -> str:
+        """Compress multiple source references into grouped file#chunk labels."""
+        grouped: dict[str, set[int]] = {}
+        passthrough: list[str] = []
+        for ref in source_refs:
+            cleaned = str(ref).strip()
+            if not cleaned:
+                continue
+            matched = re.match(r"(.+?)#chunk-(\d+)$", cleaned)
+            if not matched:
+                passthrough.append(cleaned)
+                continue
+            filename, chunk_index = matched.group(1), int(matched.group(2))
+            grouped.setdefault(filename, set()).add(chunk_index)
+
+        parts = [
+            f"{filename}#chunk-{','.join(str(index) for index in sorted(indices))}"
+            for filename, indices in grouped.items()
+        ]
+        parts.extend(item for item in passthrough if item not in parts)
+        return "; ".join(parts)
 
     def _final_mcp_answer(self, messages: Sequence[BaseMessage]) -> str | None:
         """Summarize the outcome of the latest MCP file operation."""
@@ -501,6 +874,331 @@ class DeterministicToolCallingLLM:
             if matched:
                 return matched.group(1).strip()
         return None
+
+    def _should_bypass_retrieval(
+        self,
+        messages: Sequence[BaseMessage],
+        latest_user_message: str,
+    ) -> bool:
+        """Return whether retrieval should be bypassed for a clearly non-RAG turn."""
+        birthday_memory = self._extract_birthday_memory(messages)
+        if birthday_memory and (
+            self._is_birthday_recall_question(latest_user_message)
+            or "记住" in latest_user_message
+        ):
+            return True
+        if self._is_special_char_integrity_probe(latest_user_message):
+            return True
+        if "QWEN_TOOL_TEST" in latest_user_message:
+            return True
+        if self._looks_like_delete_request(latest_user_message):
+            return True
+        if self._is_tech_news_pdf_task(latest_user_message):
+            return True
+        if self._final_mcp_answer(messages) is not None:
+            return True
+        return False
+
+    def _looks_like_retrieval_request(self, message: str) -> bool:
+        """Return whether a user turn looks like a request for grounded private knowledge."""
+        if self._looks_like_private_knowledge_prompt(message):
+            return True
+
+        lowered = message.lower()
+        question_markers = (
+            "?",
+            "？",
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "how",
+            "why",
+            "exact",
+            "according to",
+            "from the",
+            "是什么",
+            "谁",
+            "哪",
+            "多少",
+            "何时",
+            "根据",
+            "从",
+        )
+        if any(marker in lowered or marker in message for marker in question_markers):
+            return len(self._keywords(message)) >= 2
+
+        return False
+
+    def _retrieval_is_relevant(
+        self,
+        latest_user_message: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
+    ) -> bool:
+        """Return whether the current retrieval results are strong enough to keep in context."""
+        if self._looks_like_smalltalk(latest_user_message):
+            return False
+
+        if self._looks_like_private_knowledge_prompt(latest_user_message):
+            return True
+
+        normalized_chunks = [item for item in retrieved_chunks if isinstance(item, dict)]
+        if not normalized_chunks:
+            return False
+
+        best_chunk = max(
+            normalized_chunks,
+            key=lambda item: float(item.get("rerank_score", item.get("vector_score", 0.0))),
+        )
+        best_score = float(best_chunk.get("rerank_score", best_chunk.get("vector_score", 0.0)))
+        best_text = str(best_chunk.get("chunk_text", "")).lower()
+        terms = [term for term in self._keywords(latest_user_message) if len(term) > 1]
+        overlap = sum(1 for term in terms if term in best_text)
+
+        if best_score >= 0.55:
+            return True
+        if overlap >= 2 and best_score >= 0.18:
+            return True
+        if overlap >= max(1, len(terms) // 2) and best_score >= 0.12:
+            return True
+        return False
+
+    def _classify_retrieval_confidence(
+        self,
+        latest_user_message: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
+    ) -> tuple[Literal["high", "partial", "low"], str]:
+        """Classify retrieved evidence into high/partial/low confidence tiers."""
+        if not self._retrieval_is_relevant(latest_user_message, retrieved_chunks):
+            return "low", "Retrieved snippets were too weak or off-topic for a grounded answer."
+
+        expected_labels = self._expected_labeled_fields(latest_user_message)
+        if not expected_labels:
+            return "high", ""
+
+        combined_text = "\n".join(
+            str(item.get("chunk_text", "")).strip() for item in retrieved_chunks if item
+        ).strip()
+        found_labels: list[str] = []
+        missing_labels: list[str] = []
+        for label_name, label_variants in expected_labels.items():
+            if self._extract_labeled_value(combined_text, label_variants):
+                found_labels.append(label_name)
+            else:
+                missing_labels.append(label_name)
+
+        if found_labels and missing_labels:
+            return "partial", f"Missing supporting evidence for: {', '.join(missing_labels)}."
+        if missing_labels and not found_labels:
+            return "low", f"Missing supporting evidence for: {', '.join(missing_labels)}."
+        return "high", ""
+
+    def _should_retry_retrieval(
+        self,
+        latest_user_message: str,
+        *,
+        retrieval_round: int,
+        max_retrieval_rounds: int,
+    ) -> bool:
+        """Return whether a weak retrieval result should trigger another hop."""
+        if retrieval_round >= max_retrieval_rounds:
+            return False
+        if self._should_bypass_retrieval([], latest_user_message):
+            return False
+        if self._looks_like_smalltalk(latest_user_message):
+            return False
+        return self._looks_like_retrieval_request(latest_user_message)
+
+    def _build_retrieval_plan_queries(self, user_question: str) -> list[str]:
+        """Decompose one user question into a small, normalized retrieval plan."""
+        focus = self._extract_focus_from_question(user_question)
+        segments = self._build_retrieval_subquestions(user_question)
+        candidates = [user_question, focus, *segments]
+        return self._normalize_query_plan(candidates, max_queries=4)
+
+    def _build_retrieval_subquestions(self, user_question: str) -> list[str]:
+        """Build a bounded list of decomposed subquestions for the retrieval planner."""
+        focus = self._extract_focus_from_question(user_question)
+        segments = self._split_question_into_subquestions(focus or user_question)
+        return self._normalize_query_plan(segments, max_queries=3)
+
+    def _rewrite_retrieval_query(
+        self,
+        *,
+        user_question: str,
+        last_query: str,
+        retrieved_chunks: Sequence[dict[str, Any]],
+    ) -> str:
+        """Rewrite the retrieval query for one conservative follow-up hop."""
+        extracted_focus = self._extract_focus_from_question(user_question)
+        keyword_terms = list(dict.fromkeys(self._keywords(extracted_focus or user_question)))
+        keyword_focus = " ".join(keyword_terms[:8])
+        source_hint = self._best_retrieval_source_hint(retrieved_chunks)
+
+        candidates = [
+            extracted_focus,
+            keyword_focus,
+            f"{extracted_focus} {source_hint}".strip() if extracted_focus else "",
+            f"{keyword_focus} exact detail value".strip() if keyword_focus else "",
+        ]
+        last_normalized = re.sub(r"\s+", " ", last_query.strip().lower())
+        for candidate in candidates:
+            normalized = re.sub(r"\s+", " ", candidate.strip())
+            if not normalized:
+                continue
+            if normalized.lower() == last_normalized:
+                continue
+            return normalized[:200]
+        return ""
+
+    def _split_question_into_subquestions(self, text: str) -> list[str]:
+        """Split compound retrieval requests into a few focused subquestions."""
+        base = text.strip()
+        if not base:
+            return []
+
+        clauses = re.split(
+            r"(?i)\b(?:and|plus|with|also)\b|[，,；;、]|(?:以及|还有|并且|同时|和)",
+            base,
+        )
+        meaningful = [clause.strip(" .:：") for clause in clauses if clause.strip(" .:：")]
+        if len(meaningful) <= 1:
+            return [base]
+
+        subjects = self._extract_subject_tokens(base)
+        subquestions: list[str] = []
+        for clause in meaningful:
+            clause_tokens = self._keywords(clause)
+            if len(clause_tokens) < 2 and subjects:
+                clause = f"{' '.join(subjects[:3])} {clause}".strip()
+            subquestions.append(clause[:200])
+        return subquestions
+
+    def _extract_subject_tokens(self, text: str) -> list[str]:
+        """Extract broad entity tokens to keep split subquestions grounded."""
+        focus = self._extract_focus_from_question(text)
+        tokens = [token for token in self._keywords(focus or text) if len(token) > 2]
+        stopwords = {
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "how",
+            "exact",
+            "return",
+            "both",
+            "value",
+            "values",
+            "detail",
+        }
+        return [token for token in tokens if token not in stopwords][:4]
+
+    @staticmethod
+    def _normalize_query_plan(candidates: Sequence[str], max_queries: int) -> list[str]:
+        """Normalize, deduplicate, and cap a retrieval query plan."""
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            cleaned = re.sub(r"\s+", " ", str(candidate).strip()).strip(" ,，。:")
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(cleaned[:200])
+            if len(normalized) >= max_queries:
+                break
+        return normalized
+
+    def _extract_focus_from_question(self, user_question: str) -> str:
+        """Strip broad framing words and keep the concrete entities/fields to retrieve."""
+        cleaned = user_question.strip()
+        patterns = [
+            r"(?i)\bfrom the private knowledge base\b",
+            r"(?i)\baccording to the uploaded (document|file)s?\b",
+            r"(?i)\bfrom the uploaded (document|file)s?\b",
+            r"(?i)\breturn both values\b",
+            r"(?i)\bplease\b",
+            r"根据已上传[的]?(文档|文件|资料)",
+            r"从(私有)?知识库里",
+            r"从文档里",
+            r"请告诉我",
+            r"请问",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, " ", cleaned)
+        cleaned = re.sub(r"[?？]", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,，。:")
+        return cleaned[:200]
+
+    @staticmethod
+    def _best_retrieval_source_hint(retrieved_chunks: Sequence[dict[str, Any]]) -> str:
+        """Extract a small source hint from the strongest retrieved chunk."""
+        normalized = [item for item in retrieved_chunks if isinstance(item, dict)]
+        if not normalized:
+            return ""
+        best = max(
+            normalized,
+            key=lambda item: float(item.get("rerank_score", item.get("vector_score", 0.0))),
+        )
+        filename = str(best.get("filename", "")).strip()
+        stem = re.sub(r"\.[A-Za-z0-9]+$", "", filename)
+        return stem[:40]
+
+    @staticmethod
+    def _looks_like_delete_request(message: str) -> bool:
+        """Return whether the message is primarily asking for file deletion/removal."""
+        lowered = message.lower()
+        return any(token in lowered for token in ("delete", "remove", "删除", "删掉"))
+
+    @staticmethod
+    def _looks_like_private_knowledge_prompt(message: str) -> bool:
+        """Return whether the user explicitly refers to uploaded/private knowledge."""
+        lowered = message.lower()
+        markers = (
+            "knowledge base",
+            "private knowledge",
+            "uploaded document",
+            "uploaded file",
+            "private doc",
+            "private brief",
+            "according to the uploaded",
+            "from the uploaded",
+            "from the private",
+            "文档",
+            "知识库",
+            "资料",
+            "上传",
+            "私有",
+            "根据已上传",
+            "根据文档",
+        )
+        return any(marker in lowered or marker in message for marker in markers)
+
+    @staticmethod
+    def _looks_like_smalltalk(message: str) -> bool:
+        """Return whether the user message is conversational rather than evidence-seeking."""
+        normalized = message.strip().lower()
+        if not normalized:
+            return True
+
+        markers = (
+            "hello",
+            "hi",
+            "hey",
+            "thanks",
+            "thank you",
+            "你好",
+            "您好",
+            "谢谢",
+            "早上好",
+            "晚上好",
+            "在吗",
+        )
+        return any(marker in normalized for marker in markers)
 
     @staticmethod
     def _parse_rag_context(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:

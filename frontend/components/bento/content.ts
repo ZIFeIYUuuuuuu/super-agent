@@ -101,9 +101,9 @@ export type TranslationShape = {
 export const translations: Record<Locale, TranslationShape> = {
   zh: {
     kicker: "Next.js 15 智能体工作台",
-    title: "让聊天、知识库、审批与系统状态共享同一张 Bento 画布。",
+    title: "把聊天、知识库、审批和系统状态放进同一张 Bento 工作画布。",
     description:
-      "这个版本已经不再依赖旧的静态 HTML 页面，而是基于 React 19、App Router 和组件化状态流重新承载现有后端能力。",
+      "这个版本不再依赖旧的静态 HTML 页面，而是基于 React 19、App Router 和组件化状态流重新承载现有后端能力。",
     threadLabel: "线程 ID",
     namespaceLabel: "知识命名空间",
     approvalThreadLabel: "审批线程",
@@ -117,16 +117,21 @@ export const translations: Record<Locale, TranslationShape> = {
     send: "发送",
     showThoughts: "显示思考过程",
     workspaceLabel: "对话工作台",
-    workspaceDescription: "主对话区会保留流式输出，右侧工具栏负责知识、审批、历史和结果查看。",
+    workspaceDescription:
+      "主对话区保留流式输出，侧边工具栏负责知识、审批、历史和结果查看。",
     contextTitle: "上下文工具栏",
     recentThreadsTitle: "最近线程",
-    recentThreadsHint: "这里保存最近 10 条线程记录，刷新页面后仍可继续回到当时的历史对话。",
+    recentThreadsHint:
+      "这里保存最近 10 条线程记录，刷新页面后仍可继续回看当时的历史对话。",
     recentThreadsEmpty: "还没有可回看的线程记录。",
     recentThreadsOpen: "打开线程",
     emptyStateTitle: "从一个问题开始",
-    emptyStateDescription: "你可以直接聊天，也可以上传私有文档、查看缓存历史、刷新审批状态，再围绕同一个线程持续推进。",
-    knowledgeHint: "上传 PDF 或 Markdown 后，系统会把内容切分进当前知识命名空间。",
-    approvalHint: "需要人工决策的高风险动作会先在这里等待审批，再恢复执行。",
+    emptyStateDescription:
+      "你可以直接聊天，也可以上传私有文档、查看缓存历史、刷新审批状态，再围绕同一个线程持续推进。",
+    knowledgeHint:
+      "上传 PDF 或 Markdown 后，系统会把内容切分进当前知识命名空间。",
+    approvalHint:
+      "需要人工决策的高风险动作会先在这里等待审批，再恢复执行。",
     activityHint: "这里记录最近的刷新、上传、审批和历史加载动作。",
     uploadTitle: "上传私有文档",
     chooseFile: "选择 PDF / Markdown 文件",
@@ -144,7 +149,8 @@ export const translations: Record<Locale, TranslationShape> = {
     historyCacheOn: "Redis 热缓存已启用",
     historyCacheOff: "Redis 热缓存未启用",
     approvalModalTitle: "人工介入",
-    approvalModalDescription: "当前线程命中了需要人工确认的高风险动作，请在弹窗内批准、拒绝，或在批准后恢复执行。",
+    approvalModalDescription:
+      "当前线程命中了需要人工确认的高风险动作，请在弹窗内批准、拒绝，或在批准后恢复执行。",
     close: "关闭",
     knowledgeTitle: "知识后端",
     refresh: "刷新",
@@ -215,23 +221,30 @@ export const translations: Record<Locale, TranslationShape> = {
     send: "Send",
     showThoughts: "Show thought process",
     workspaceLabel: "Conversation workspace",
-    workspaceDescription: "The main column stays focused on streaming chat while the right rail keeps knowledge, approval, history, and result controls close by.",
+    workspaceDescription:
+      "The main column stays focused on streaming chat while the right rail keeps knowledge, approval, history, and result controls close by.",
     contextTitle: "Context rail",
     recentThreadsTitle: "Recent threads",
-    recentThreadsHint: "Keep the latest 10 threads on the left so you can reopen prior conversations after a refresh.",
+    recentThreadsHint:
+      "Keep the latest 10 threads on the left so you can reopen prior conversations after a refresh.",
     recentThreadsEmpty: "No recent thread history yet.",
     recentThreadsOpen: "Open thread",
     emptyStateTitle: "Start with one question",
-    emptyStateDescription: "Chat directly, upload private documents, inspect cached history, and resume guarded runs from the same thread.",
-    knowledgeHint: "Upload PDF or Markdown files to index them into the current knowledge namespace.",
-    approvalHint: "High-risk actions pause here for review before the workflow resumes.",
-    activityHint: "Recent refreshes, uploads, approval actions, and history loads appear here.",
+    emptyStateDescription:
+      "Chat directly, upload private documents, inspect cached history, and resume guarded runs from the same thread.",
+    knowledgeHint:
+      "Upload PDF or Markdown files to index them into the current knowledge namespace.",
+    approvalHint:
+      "High-risk actions pause here for review before the workflow resumes.",
+    activityHint:
+      "Recent refreshes, uploads, approval actions, and history loads appear here.",
     uploadTitle: "Upload private documents",
     chooseFile: "Choose a PDF / Markdown file",
     upload: "Upload",
     uploadIdle: "Choose a PDF or Markdown document before uploading.",
     historyTitle: "History",
-    historyHint: "Review the latest cached messages for this thread without leaving the workspace.",
+    historyHint:
+      "Review the latest cached messages for this thread without leaving the workspace.",
     historyEmpty: "No cached history for this thread.",
     historyLoaded: "History refreshed.",
     historyLoadFailed: "History load failed.",
@@ -242,7 +255,8 @@ export const translations: Record<Locale, TranslationShape> = {
     historyCacheOn: "Redis hot cache enabled",
     historyCacheOff: "Redis hot cache disabled",
     approvalModalTitle: "Human in the loop",
-    approvalModalDescription: "This thread hit a high-risk action. Review it in the modal, then approve, reject, or resume after approval.",
+    approvalModalDescription:
+      "This thread hit a high-risk action. Review it in the modal, then approve, reject, or resume after approval.",
     close: "Close",
     knowledgeTitle: "Knowledge backend",
     refresh: "Refresh",

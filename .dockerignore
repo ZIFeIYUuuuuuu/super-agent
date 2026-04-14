@@ -1,18 +1,48 @@
+# Git and editor metadata
 .git
+.gitignore
 .idea
+.vscode
+
+# Local env and secrets
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+
+# Python virtualenv and caches
 .venv
-.next
-node_modules
-frontend/node_modules
-frontend/.next
+venv
 __pycache__
 app/__pycache__
 *.pyc
-.env
-frontend/.env.local
-generated-pdfs
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node / frontend artifacts
+frontend
+node_modules
+.next
+out
+
+# Local service data and generated outputs
 .pgdata-*
+.pgdata-*.log
+generated-pdfs
 .tool-test-artifacts
 .rag-test-artifacts
 .approval-test-artifacts
+service.stdout.log
+service.stderr.log
+*.log
+*.pid
+
+# Misc build output and temp files
+dist
+build
+tmp
+temp
 test_sse.py

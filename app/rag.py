@@ -147,6 +147,10 @@ class KnowledgeBase:
             top_k or self._settings.retrieval_limit,
         )
 
+    async def has_documents(self, namespace_id: str) -> bool:
+        """Return whether the namespace has any stored chunks to retrieve from."""
+        return await asyncio.to_thread(self._has_documents_sync, namespace_id)
+
     async def status(self) -> KnowledgeBaseStatus:
         """Return current backend status and chunk count."""
         return await asyncio.to_thread(self._status_sync)
@@ -359,6 +363,24 @@ class KnowledgeBase:
             chunk_count=chunk_count,
             updated_at=datetime.now(UTC).isoformat(),
         )
+
+    def _has_documents_sync(self, namespace_id: str) -> bool:
+        """Return whether a namespace currently has at least one stored chunk."""
+        if not namespace_id.strip():
+            return False
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1 AS ok
+                    FROM rag_chunks
+                    WHERE namespace_id = %s
+                    LIMIT 1
+                    """,
+                    (namespace_id,),
+                )
+                return cursor.fetchone() is not None
 
     def _search_candidates(
         self,
