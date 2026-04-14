@@ -5,15 +5,18 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from app.env_loader import load_env_file
+from app.logging_utils import configure_logging
 
 # Load .env as early as possible so downstream modules see env vars on import/use.
 load_env_file()
+configure_logging()
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from app.agent import AgentRuntime, managed_agent_runtime
 from app.approvals import ApprovalRecord, ApprovalStore, managed_approval_store
+from app.auth import require_api_key
 from app.history_cache import HistoryCache, managed_history_cache
 from app.mcp_client import MCPClientBridge, managed_mcp_client
 from app.models import (
@@ -30,12 +33,17 @@ from app.models import (
 )
 from app.persistence import managed_postgres_checkpointer
 from app.rag import IngestResult, KnowledgeBase, KnowledgeBaseStatus, managed_knowledge_base
+from app.rate_limit import enforce_rate_limit, managed_rate_limiter
 from app.streaming import (
     collect_chat_events,
     decode_sse_data_line,
     format_sse_data,
     stream_chat_events,
 )
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -45,31 +53,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict[str, Any]]:
         async with managed_knowledge_base() as knowledge_base:
             async with managed_approval_store() as approval_store:
                 async with managed_history_cache() as history_cache:
-                    async with managed_mcp_client() as mcp_client:
-                        async with managed_agent_runtime(
-                            checkpoint_store.checkpointer,
-                            knowledge_base,
-                            approval_store,
-                            mcp_client,
-                        ) as runtime:
-                            resources: dict[str, Any] = {
-                                "service": "agent-backend-ready",
-                                "agent_runtime": runtime,
-                                "checkpoint_store": checkpoint_store,
-                                "knowledge_base": knowledge_base,
-                                "approval_store": approval_store,
-                                "history_cache": history_cache,
-                                "mcp_client": mcp_client,
-                            }
-                            app.state.agent_runtime = runtime
-                            app.state.checkpoint_store = checkpoint_store
-                            app.state.knowledge_base = knowledge_base
-                            app.state.approval_store = approval_store
+                    async with managed_rate_limiter() as rate_limiter:
+                        async with managed_mcp_client() as mcp_client:
+                            async with managed_agent_runtime(
+                                checkpoint_store.checkpointer,
+                                knowledge_base,
+                                approval_store,
+                                mcp_client,
+                            ) as runtime:
+                                resources: dict[str, Any] = {
+                                    "service": "agent-backend-ready",
+                                    "agent_runtime": runtime,
+                                    "checkpoint_store": checkpoint_store,
+                                    "knowledge_base": knowledge_base,
+                                    "approval_store": approval_store,
+                                    "history_cache": history_cache,
+                                    "rate_limiter": rate_limiter,
+                                    "mcp_client": mcp_client,
+                                }
+                                app.state.agent_runtime = runtime
+                                app.state.checkpoint_store = checkpoint_store
+                                app.state.knowledge_base = knowledge_base
+                                app.state.approval_store = approval_store
                             app.state.history_cache = history_cache
+                            app.state.rate_limiter = rate_limiter
                             app.state.mcp_client = mcp_client
+                            logger.info("Application resources initialized successfully.")
                             try:
                                 yield resources
                             finally:
+                                logger.info("Application resources are shutting down.")
                                 resources.clear()
 
 
@@ -80,6 +93,7 @@ app = FastAPI(
 )
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:3100").strip()
+PROTECTED_API_DEPENDENCIES = [Depends(require_api_key), Depends(enforce_rate_limit)]
 
 
 @app.get("/", include_in_schema=False)
@@ -200,7 +214,11 @@ def _cache_messages_from_events(events: list[ChatStreamEvent]) -> list[CachedHis
     ]
 
 
-@app.post("/v1/knowledge/upload", response_model=KnowledgeUploadResponse)
+@app.post(
+    "/v1/knowledge/upload",
+    response_model=KnowledgeUploadResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def upload_knowledge_document_legacy(
     request: Request,
     file: UploadFile | None = File(default=None),
@@ -218,7 +236,11 @@ async def upload_knowledge_document_legacy(
     )
 
 
-@app.post("/v1/knowledge/documents", response_model=KnowledgeUploadResponse)
+@app.post(
+    "/v1/knowledge/documents",
+    response_model=KnowledgeUploadResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def upload_knowledge_document(
     request: Request,
     file: UploadFile | None = File(default=None),
@@ -236,7 +258,11 @@ async def upload_knowledge_document(
     )
 
 
-@app.get("/v1/threads/{thread_id}/history", response_model=ThreadHistoryResponse)
+@app.get(
+    "/v1/threads/{thread_id}/history",
+    response_model=ThreadHistoryResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def thread_history(thread_id: str, request: Request) -> ThreadHistoryResponse:
     """Return recent hot-cached chat history for one thread."""
     history_cache: HistoryCache = request.app.state.history_cache
@@ -248,7 +274,11 @@ async def thread_history(thread_id: str, request: Request) -> ThreadHistoryRespo
     )
 
 
-@app.get("/v1/knowledge/status", response_model=KnowledgeStatusResponse)
+@app.get(
+    "/v1/knowledge/status",
+    response_model=KnowledgeStatusResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def knowledge_status(request: Request) -> KnowledgeStatusResponse:
     """Return current RAG backend state and pgvector availability."""
     knowledge_base: KnowledgeBase = request.app.state.knowledge_base
@@ -262,7 +292,11 @@ async def knowledge_status(request: Request) -> KnowledgeStatusResponse:
     )
 
 
-@app.get("/v1/approvals/pending/{thread_id}", response_model=PendingApprovalResponse)
+@app.get(
+    "/v1/approvals/pending/{thread_id}",
+    response_model=PendingApprovalResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def get_pending_approval(thread_id: str, request: Request) -> PendingApprovalResponse:
     """Return the latest approval state for one thread."""
     approval_store: ApprovalStore = request.app.state.approval_store
@@ -275,7 +309,11 @@ async def get_pending_approval(thread_id: str, request: Request) -> PendingAppro
     )
 
 
-@app.post("/v1/approvals/decision", response_model=ApprovalStatusResponse)
+@app.post(
+    "/v1/approvals/decision",
+    response_model=ApprovalStatusResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def decide_approval(
     payload: ApprovalDecisionRequest,
     request: Request,
@@ -295,7 +333,11 @@ async def decide_approval(
     return _approval_response(record)
 
 
-@app.post("/v1/approvals/resume", response_model=ApprovalStatusResponse)
+@app.post(
+    "/v1/approvals/resume",
+    response_model=ApprovalStatusResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def resume_approval(
     payload: ApprovalDecisionRequest,
     request: Request,
@@ -304,7 +346,11 @@ async def resume_approval(
     return await decide_approval(payload, request)
 
 
-@app.post("/v1/approvals/{approval_id}/decision", response_model=ApprovalStatusResponse)
+@app.post(
+    "/v1/approvals/{approval_id}/decision",
+    response_model=ApprovalStatusResponse,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def decide_approval_by_path(
     approval_id: str,
     payload: ApprovalDecisionPathRequest,
@@ -322,7 +368,11 @@ async def decide_approval_by_path(
     )
 
 
-@app.post("/v1/chat/completions", response_model=None)
+@app.post(
+    "/v1/chat/completions",
+    response_model=None,
+    dependencies=PROTECTED_API_DEPENDENCIES,
+)
 async def chat_completions(
     payload: ChatCompletionRequest,
     request: Request,

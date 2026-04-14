@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from typing import AsyncIterator
 from redis.asyncio import Redis
 
 from app.models import CachedHistoryMessage
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -58,11 +62,11 @@ class HistoryCache:
             await client.ping()
         except Exception as exc:
             self._client = None
-            print(f"[history-cache] Redis unavailable, hot cache disabled: {exc}")
+            logger.warning("Redis unavailable, hot cache disabled: %s", exc)
             await client.aclose()
             return
         self._client = client
-        print("[history-cache] Redis hot cache enabled.")
+        logger.info("Redis hot cache enabled.")
 
     async def close(self) -> None:
         """Close the underlying Redis connection."""
@@ -84,7 +88,7 @@ class HistoryCache:
         try:
             deduped = await self._dedupe_against_tail(key, messages)
         except Exception as exc:
-            print(f"[history-cache] append dedupe skipped: {exc}")
+            logger.warning("History cache dedupe skipped: %s", exc)
             deduped = messages
 
         values = [json.dumps(item.model_dump(), ensure_ascii=False) for item in deduped]
@@ -97,7 +101,7 @@ class HistoryCache:
             pipeline.expire(key, self._settings.ttl_seconds)
             await pipeline.execute()
         except Exception as exc:
-            print(f"[history-cache] append failed, request will continue without cache: {exc}")
+            logger.warning("History cache append failed, continuing without cache: %s", exc)
 
     async def get_messages(self, thread_id: str) -> list[CachedHistoryMessage]:
         """Fetch the currently cached messages for one thread."""
@@ -108,7 +112,7 @@ class HistoryCache:
         try:
             values = await self._client.lrange(key, 0, -1)
         except Exception as exc:
-            print(f"[history-cache] read failed, returning empty history: {exc}")
+            logger.warning("History cache read failed, returning empty history: %s", exc)
             return []
         items: list[CachedHistoryMessage] = []
         for value in values:
@@ -126,7 +130,7 @@ class HistoryCache:
         try:
             await self._client.delete(self._key(thread_id))
         except Exception as exc:
-            print(f"[history-cache] clear failed: {exc}")
+            logger.warning("History cache clear failed: %s", exc)
 
     async def is_enabled(self) -> bool:
         """Return whether Redis caching is currently active."""

@@ -37,6 +37,8 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: super_agent_backend
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       db:
         condition: service_healthy
@@ -68,6 +70,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: super_agent_frontend
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       backend:
         condition: service_started

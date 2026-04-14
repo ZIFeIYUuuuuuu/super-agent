@@ -4,6 +4,7 @@ services:
       - "63790:6379"
 
   backend:
+    user: "0:0"
     command:
       [
         "python",
@@ -20,6 +21,7 @@ services:
       - .:/app
 
   frontend:
+    user: "0:0"
     command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3100"]
     volumes:
       - ./frontend:/app
