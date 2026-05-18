@@ -13,7 +13,15 @@
 
 当前浏览器主入口由 `frontend/` 提供，后端根路径会重定向到前端页面。
 
-## Architecture
+## 双语概览 / Bilingual Overview
+
+| 中文 | English |
+| --- | --- |
+| 一个基于 FastAPI、LangGraph、PGVector、Redis 和 Next.js 的 Agent 工作台。 | An agent workspace built with FastAPI, LangGraph, PGVector, Redis, and Next.js. |
+| 支持流式聊天、RAG 文档检索、工具调用、MCP 接入、人工审批和恢复执行。 | Supports streaming chat, RAG document retrieval, tool calls, MCP integration, human approval, and resumed execution. |
+| README 展示 eval harness、trace 截图、部署 checklist 和可量化指标。 | The README includes an eval harness, trace screenshot, deployment checklist, and measurable metrics. |
+
+## 架构 / Architecture
 
 ```mermaid
 flowchart LR
@@ -30,17 +38,21 @@ flowchart LR
   SSE --> Frontend
 ```
 
-## Demo GIF
+## 演示 GIF / Demo GIF
 
 ![Demo GIF](docs/assets/demo.gif)
 
-## Trace Screenshot
+## Trace 截图 / Trace Screenshot
 
 ![Trace screenshot](docs/assets/trace-screenshot.png)
 
+Trace 视图用于解释 Agent 行为：检索决策、chunk 分数、工具调用、审批节点、恢复执行事件和最终来源引用。
+
 The trace view is the surface I use to explain agent behavior: retrieval decisions, chunk scores, tool calls, approval gates, resume events, and final source references.
 
-## Eval Harness
+## 评估 Harness / Eval Harness
+
+无需模型、数据库、Redis 或向量库凭据即可运行本地确定性 eval harness：
 
 Run the local deterministic eval harness without model, database, Redis, or vector-store credentials:
 
