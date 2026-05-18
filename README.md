@@ -13,6 +13,51 @@
 
 当前浏览器主入口由 `frontend/` 提供，后端根路径会重定向到前端页面。
 
+## Architecture
+
+```mermaid
+flowchart LR
+  User["Browser workspace"] --> Frontend["Next.js 15 frontend"]
+  Frontend --> Proxy["Frontend API proxy"]
+  Proxy --> API["FastAPI backend"]
+  API --> Graph["LangGraph agent runtime"]
+  Graph --> RAG["PGVector RAG retrieval"]
+  Graph --> Tools["Tools + MCP clients"]
+  Graph --> Approval["Human approval checkpoint"]
+  API --> Redis["Redis thread cache"]
+  API --> Postgres["PostgreSQL persistence"]
+  Graph --> SSE["SSE token/tool stream"]
+  SSE --> Frontend
+```
+
+## Demo GIF
+
+![Demo GIF](docs/assets/demo.gif)
+
+## Trace Screenshot
+
+![Trace screenshot](docs/assets/trace-screenshot.png)
+
+The trace view is the surface I use to explain agent behavior: retrieval decisions, chunk scores, tool calls, approval gates, resume events, and final source references.
+
+## Eval Harness
+
+Run the local deterministic eval harness without model, database, Redis, or vector-store credentials:
+
+```powershell
+python tests\eval_harness.py
+```
+
+Current local output:
+
+| Metric | Current portfolio baseline | Measurement note |
+| --- | ---: | --- |
+| Latency | P50 `0.84ms`, P95 `1.57ms` | Deterministic planner/retrieval reviewer, 3 local cases |
+| RAG hit rate | `100%` | Strong retrieved chunks at `rerank_score >= 0.80` |
+| Agent success rate | `100%` | Required answer terms and source refs present |
+| Report generation time | `N/A` | Report/PDF route is not part of this harness yet |
+| Cost | `$0.00 / eval run` | No external model calls in deterministic harness |
+
 ## 技术栈
 
 后端：
@@ -184,6 +229,12 @@ SSE / 工具链验证：
 python test_sse.py --base-url http://127.0.0.1:8010
 ```
 
+本地 eval harness：
+
+```powershell
+python tests\eval_harness.py
+```
+
 ## 核心接口
 
 常用后端接口包括：
@@ -219,6 +270,15 @@ python test_sse.py --base-url http://127.0.0.1:8010
 - Agent 应用：`https://agent.yourblog.com`
 - 反向代理到前端 `3100`
 - 前端再通过 `BACKEND_URL` 访问后端 `8010`
+
+### Production Deployment Checklist
+
+1. Put the app behind HTTPS, preferably `agent.yourdomain.com`.
+2. Run `docker compose up -d --build` on the host or deploy equivalent backend/frontend/db/redis services.
+3. Set `FRONTEND_URL`, `BACKEND_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `DATABASE_URL`, `REDIS_URL`, and any tool provider keys in environment variables.
+4. Restrict database and Redis ports to the private network; expose only the reverse proxy.
+5. Run `python tests\eval_harness.py` and `python test_sse.py --base-url https://agent.yourdomain.com` after deployment.
+6. Capture a fresh trace screenshot after one RAG + approval run and replace `docs/assets/trace-screenshot.png`.
 
 如果你一定要挂在子路径，比如 `https://yourblog.com/agent`，通常还需要额外处理 Next.js 的 `basePath`、反向代理规则和静态资源路径。
 
