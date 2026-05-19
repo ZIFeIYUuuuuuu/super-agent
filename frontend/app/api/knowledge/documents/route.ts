@@ -1,7 +1,5 @@
 import { buildBackendUrl } from "@/lib/backend";
 
-export const dynamic = "force-dynamic";
-
 export async function POST(request: Request) {
   const formData = await request.formData();
   const response = await fetch(buildBackendUrl("/v1/knowledge/documents"), {

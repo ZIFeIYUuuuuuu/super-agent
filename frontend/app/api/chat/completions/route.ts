@@ -1,7 +1,5 @@
 import { buildBackendUrl } from "@/lib/backend";
 
-export const dynamic = "force-dynamic";
-
 function copyResponseHeaders(response: Response) {
   const headers = new Headers();
   const contentType = response.headers.get("content-type");

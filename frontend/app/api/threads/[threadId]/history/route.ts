@@ -1,7 +1,5 @@
 import { buildBackendUrl } from "@/lib/backend";
 
-export const dynamic = "force-dynamic";
-
 type RouteContext = {
   params: Promise<{
     threadId: string;
