@@ -23,15 +23,9 @@ flowchart LR
   SSE --> Frontend
 ```
 
-## Demo GIF
+## Online Demo
 
-![Demo GIF](docs/assets/demo.gif)
-
-## Trace Screenshot
-
-![Trace screenshot](docs/assets/trace-screenshot.png)
-
-The trace view explains agent behavior: retrieval decisions, chunk scores, tool calls, approval gates, resume events, and final source references.
+[Open the live demo](https://zifeiyuuuuuuu.github.io/super-agent/)
 
 ## Eval Harness
 
