@@ -25,9 +25,32 @@ flowchart LR
 
 ## Online Demo
 
-[Open the live demo](https://zifeiyuuuuuuu.github.io/super-agent/)
+- GitHub Pages static demo: `https://zifeiyuuuuuuu.github.io/super-agent/`
+- The hosted demo keeps the workspace UI and static answer flow. RAG, MCP, approval resume, and Redis / PostgreSQL persistence still require a local or private deployment.
 
-## Eval Harness
+## Trace Screenshot
+
+![Trace screenshot](docs/assets/trace-screenshot.png)
+
+The trace view explains agent behavior: retrieval decisions, chunk scores, tool calls, approval gates, resume events, and final source references.
+
+## Real-Model Smoke Eval
+
+You can exercise the real OpenAI-compatible model path with:
+
+```powershell
+python tests\real_model_eval.py
+```
+
+Current saved result file: `docs/real-model-eval.qwen-plus.json`
+
+| Metric | Current measured result | Measurement note |
+| --- | ---: | --- |
+| Model | `qwen-plus` | DashScope compatible-mode |
+| Success rate | `3/3 (100%)` | Covers direct answering, workspace capability summary, and tool-result synthesis |
+| Latency | P50 `10862.81ms`, P95 `15356.58ms` | Taken from `docs/real-model-eval.qwen-plus.json` |
+
+## Offline Eval Harness
 
 Run the deterministic local eval harness without model, database, Redis, or vector-store credentials:
 
@@ -37,7 +60,7 @@ python tests\eval_harness.py
 
 | Metric | Current portfolio baseline | Measurement note |
 | --- | ---: | --- |
-| Latency | P50 `0.84ms`, P95 `1.57ms` | Deterministic planner/retrieval reviewer, 3 local cases |
+| Latency | P50 `1.59ms`, P95 `1.96ms` | Deterministic planner/retrieval reviewer, 3 local cases |
 | RAG hit rate | `100%` | Strong retrieved chunks at `rerank_score >= 0.80` |
 | Agent success rate | `100%` | Required answer terms and source refs present |
 | Report generation time | `N/A` | Report/PDF route is not part of this harness yet |

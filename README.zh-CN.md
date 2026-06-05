@@ -23,9 +23,10 @@ flowchart LR
   SSE --> Frontend
 ```
 
-## 演示 GIF
+## 线上演示
 
-![演示 GIF](docs/assets/demo.gif)
+- GitHub Pages 静态演示：`https://zifeiyuuuuuuu.github.io/super-agent/`
+- 这份线上演示保留了前端工作台交互和静态回复路径；RAG、MCP、审批恢复和 Redis / PostgreSQL 持久化仍以本地或私有部署为准。
 
 ## Trace 截图
 
@@ -33,7 +34,23 @@ flowchart LR
 
 Trace 视图用于解释 Agent 行为：检索决策、chunk 分数、工具调用、审批节点、恢复执行事件和最终来源引用。
 
-## 评估 Harness
+## 真实模型冒烟评测
+
+使用 OpenAI-compatible 配置的真实模型链路可运行：
+
+```powershell
+python tests\real_model_eval.py
+```
+
+当前已落盘结果：`docs/real-model-eval.qwen-plus.json`
+
+| 指标 | 当前实测结果 | 说明 |
+| --- | ---: | --- |
+| 模型 | `qwen-plus` | DashScope compatible-mode |
+| 成功率 | `3/3 (100%)` | 覆盖直接问答、工作台能力概括、基于工具结果总结 |
+| 延迟 | P50 `10862.81ms`, P95 `15356.58ms` | 取自 `docs/real-model-eval.qwen-plus.json` |
+
+## 离线评估 Harness
 
 无需模型、数据库、Redis 或向量库凭据即可运行本地确定性 eval harness：
 
@@ -43,7 +60,7 @@ python tests\eval_harness.py
 
 | 指标 | 当前作品集 baseline | 说明 |
 | --- | ---: | --- |
-| 延迟 | P50 `0.84ms`, P95 `1.57ms` | 确定性 planner / retrieval reviewer，3 个本地案例 |
+| 延迟 | P50 `1.59ms`, P95 `1.96ms` | 确定性 planner / retrieval reviewer，3 个本地案例 |
 | RAG 命中率 | `100%` | 强证据 chunk 的 `rerank_score >= 0.80` |
 | Agent 成功率 | `100%` | 必要答案项和来源引用都存在 |
 | 报告生成耗时 | `N/A` | 报告/PDF 路由尚未纳入该 harness |

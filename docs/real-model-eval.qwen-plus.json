@@ -1,0 +1,28 @@
+﻿{
+  "provider_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "model": "qwen-plus",
+  "case_count": 3,
+  "success_rate": 1.0,
+  "latency_p50_ms": 10862.81,
+  "latency_p95_ms": 15356.58,
+  "results": [
+    {
+      "case": "direct_chat_answer",
+      "latency_ms": 10862.81,
+      "passed": true,
+      "detail": "API 契约测试（API Contract Testing）是一种**以接口契约（如 OpenAPI/Swagger 文档、Pact 文件等）为依据，验证前后端是否按约定行为交互**的测试方法。  简要来说：   - **前端**和**后端**事先约定好 API 的请求路径、方法、参数、请求体格式、响应状态码、响应字段"
+    },
+    {
+      "case": "architecture_summary",
+      "latency_ms": 15356.58,
+      "passed": true,
+      "detail": "这是一个融合了**RAG（检索增强生成）、工具调用（Tool Calling）和人工审批（Human-in-the-Loop）** 三大能力的智能体工作台，本质上是一个可编排、可管控、可落地的企业级AI应用平台。  ✅ **核心能力简述：**   - **RAG**：让智能体能实时接入企业私有知识库（如产品文档、客服工"
+    },
+    {
+      "case": "tool_result_synthesis",
+      "latency_ms": 2723.12,
+      "passed": true,
+      "detail": "今天 AI 领域最值得关注的动态是：一家 AI 初创公司正式发布面向企业团队的编程助手，重点强化代码审查与工作流自动化能力。该工具旨在提升大型研发团队的协作效率与代码质量，标志着 AI 编程辅助正从个人开发者场景加速迈向企业级落地。"
+    }
+  ]
+}
