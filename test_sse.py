@@ -105,8 +105,18 @@ class ServiceController:
 
     def cleanup_logs(self) -> None:
         for path in (self.stdout_path, self.stderr_path):
-            if path.exists():
-                path.unlink()
+            if not path.exists():
+                continue
+            for attempt in range(5):
+                try:
+                    path.unlink()
+                    break
+                except FileNotFoundError:
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.2)
 
 
 class PostgresController:

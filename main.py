@@ -75,15 +75,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict[str, Any]]:
                                 app.state.checkpoint_store = checkpoint_store
                                 app.state.knowledge_base = knowledge_base
                                 app.state.approval_store = approval_store
-                            app.state.history_cache = history_cache
-                            app.state.rate_limiter = rate_limiter
-                            app.state.mcp_client = mcp_client
-                            logger.info("Application resources initialized successfully.")
-                            try:
-                                yield resources
-                            finally:
-                                logger.info("Application resources are shutting down.")
-                                resources.clear()
+                                app.state.history_cache = history_cache
+                                app.state.rate_limiter = rate_limiter
+                                app.state.mcp_client = mcp_client
+                                logger.info("Application resources initialized successfully.")
+                                try:
+                                    yield resources
+                                finally:
+                                    logger.info("Application resources are shutting down.")
+                                    resources.clear()
 
 
 app = FastAPI(
